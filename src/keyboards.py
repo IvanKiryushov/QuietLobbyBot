@@ -17,13 +17,14 @@ EMOJI_CAPTCHA_DICT = {
 # Тексты переводов (без декоративных эмодзи)
 TRANSLATIONS = {
     "ru": {
-        "greet": "Привет, {name}!\n\nТы вступаешь в группу <b>{chat_name}</b>.\n\nДля защиты от спама выбери <b>{target_word}</b> среди кнопок ниже:",
-        "wrong": "Ошибка! Ты выбрал не тот символ. Ты заблокирован.",
-        "too_fast": "Слишком быстро! Люди так быстро не кликают. Доступ заблокирован.",
-        "success": "Проверка пройдена! Ты разблокирован(а) в чате, добро пожаловать!",
+        "greet": "Привет, {name}!\n\nДля возможности писать в чате <b>{chat_name}</b> выбери <b>{target_word}</b> среди кнопок ниже:",
+        "wrong": "Неверно! Ты заблокирован.",
+        "too_fast": "Слишком быстро! Ты заблокирован.",
+        "success": "Успешно! Теперь ты можешь писать в чате, добро пожаловать!",
         "not_your_button": "Это не твоя кнопка!",
-        "group_greet": "<b>ДОСТУП ОГРАНИЧЕН</b>\n\nПривет, <b>{name}</b>!\nЧтобы писать в группе <b>{chat_name}</b>, тебе нужно пройти быструю проверку против спам-ботов в ЛС.\n\n<b>ВНИМАНИЕ:</b> У тебя есть ровно <b>60 секунд</b>, иначе ты будешь автоматически удален из чата!\n\n<b>НАЖМИ КНОПКУ НИЖЕ ДЛЯ РАЗБЛОКИРОВКИ:</b>",
+        "group_greet": "<b>ДОСТУП ОГРАНИЧЕН</b>\n\nПривет, <b>{name}</b>!\nЧтобы писать в чате <b>{chat_name}</b>, тебе нужно пройти быструю проверку против спам-ботов в ЛС.\n\n<b>ВНИМАНИЕ:</b> У тебя есть ровно <b>60 секунд</b>, иначе ты будешь автоматически удален из чата!\n\n<b>НАЖМИ КНОПКУ НИЖЕ ДЛЯ РАЗБЛОКИРОВКИ:</b>",
         "btn_verify": "ЖМИ СЮДА ДЛЯ РАЗБЛОКИРОВКИ",
+        "btn_return": "Вернуться в чат",
         "too_slow": "Время вышло! Ты не успел пройти проверку вовремя и был удален из чата."
     },
     "en": {
@@ -34,6 +35,7 @@ TRANSLATIONS = {
         "not_your_button": "This button is not for you!",
         "group_greet": "<b>ACCESS RESTRICTED</b>\n\nHello, <b>{name}</b>!\nTo write in <b>{chat_name}</b>, you must pass a quick anti-spam verification in PM.\n\n<b>ATTENTION:</b> You have exactly <b>60 seconds</b>, or you will be automatically kicked from the group!\n\n<b>CLICK THE BUTTON BELOW TO UNMUTE:</b>",
         "btn_verify": "CLICK HERE TO UNMUTE",
+        "btn_return": "Return to Chat",
         "too_slow": "Time is up! You failed to verify in time and were removed from the group."
     },
     "vi": {
@@ -42,8 +44,9 @@ TRANSLATIONS = {
         "too_fast": "Quá nhanh! Con người không thể bấm nhanh như vậy. Đã chặn truy cập.",
         "success": "Đã xác nhận! Bạn đã được mở chặn trong nhóm, chào mừng bạn!",
         "not_your_button": "Nút này không dành cho bạn!",
-        "group_greet": "<b>TRUY CẬP BỊ HẠN CHẾ</b>\n\nXin chào, <b>{name}</b>!\nĐể gửi tin nhắn trong nhóm <b>{chat_name}</b>, bạn phải vượt qua xác minh chống tin rác trong tin nhắn riêng.\n\n<b>CHÚ Ý:</b> Bạn có đúng <b>60 giây</b>, nếu không bạn sẽ tự động bị xóa khỏi nhóm!\n\n<b>BẤM VÀO NÚT BÊN DƯỚI ĐỂ MỞ CHẶN:</b>",
+        "group_greet": "<b>TRUY CẬP BỊ HẠN CHẾ</b>\n\nXin chào, <b>{name}</b>!\nĐể gửi tin nhắn trong nhóm <b>{chat_name}</b>, bạn phải vượt qua xác minh chống tin rác trong tin nhắn riêng.\n\n<b>CHÚ Ý:</b> Bạn có đúng <b>60 giây</b>, nếu không bạn sẽ tự động bị xóa khỏi nhóm!\n\n<b>BẤM VÀO НÚТ BÊN DƯỚI ĐỂ MỞ CHẶN:</b>",
         "btn_verify": "BẤM VÀO ĐÂY ĐỂ MỞ CHẶN",
+        "btn_return": "Quay lại nhóm",
         "too_slow": "Hết giờ! Bạn đã không xác minh kịp thời và đã bị xóa khỏi nhóm."
     }
 }

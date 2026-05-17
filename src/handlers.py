@@ -321,7 +321,33 @@ async def handle_captcha_click(callback: CallbackQuery, bot: Bot):
                 except TelegramAPIError as e:
                     logger.error(f"Не удалось удалить временное сообщение: {e}")
                     
-            await callback.message.edit_text(TRANSLATIONS[lang]["success"], reply_markup=None)
+            # Динамически формируем ссылку на группу для быстрого возврата пользователя
+            group_url = None
+            try:
+                chat = await bot.get_chat(chat_id)
+                if chat.username:
+                    group_url = f"https://t.me/{chat.username}"
+                elif chat.invite_link:
+                    group_url = chat.invite_link
+            except TelegramAPIError:
+                pass
+                
+            if not group_url:
+                chat_id_str = str(chat_id)
+                if chat_id_str.startswith("-100"):
+                    clean_id = chat_id_str.replace("-100", "")
+                    group_url = f"https://t.me/c/{clean_id}"
+                elif chat_id_str.startswith("-"):
+                    clean_id = chat_id_str.replace("-", "")
+                    group_url = f"https://t.me/c/{clean_id}"
+                else:
+                    group_url = f"https://t.me/c/{chat_id_str}"
+                    
+            markup_return = InlineKeyboardMarkup(inline_keyboard=[
+                [InlineKeyboardButton(text=TRANSLATIONS[lang]["btn_return"], url=group_url)]
+            ])
+            
+            await callback.message.edit_text(TRANSLATIONS[lang]["success"], reply_markup=markup_return)
             await callback.answer("Успешно!")
             
         else:
