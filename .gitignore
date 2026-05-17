@@ -1,0 +1,21 @@
+.env
+*.session
+*.session-journal
+token.json
+credentials.json
+
+# Окружение Python
+__pycache__/
+*.py[cod]
+*$py.class
+.venv/
+venv/
+ENV/
+env/
+
+# Логи и временные файлы
+*.log
+.tmp_*
+.tmp_install_log.txt
+.tmp_telethon_install.txt
+.tmp_log.txt
