@@ -3,6 +3,7 @@ import aiohttp
 import logging
 import time
 import os
+import html
 from aiogram import Router, F, Bot
 from aiogram.types import ChatMemberUpdated, ChatPermissions, Message, CallbackQuery, InlineKeyboardMarkup, InlineKeyboardButton, FSInputFile
 from aiogram.filters.chat_member_updated import ChatMemberUpdatedFilter, IS_NOT_MEMBER, MEMBER
@@ -74,7 +75,7 @@ async def handle_new_member(message: Message, bot: Bot):
     мутит его, удаляет системное сообщение и отправляет капчу.
     """
     chat_id = message.chat.id
-    chat_name = message.chat.title or "нашего чата"
+    chat_name = html.escape(message.chat.title or "нашего чата")
     
     # Мгновенно удаляем служебное сообщение о входе
     try:
@@ -88,7 +89,7 @@ async def handle_new_member(message: Message, bot: Bot):
             continue
             
         user_id = member.id
-        user_name = member.first_name
+        user_name = html.escape(member.first_name)
         
         # 1. Проверяем в глобальной базе спамеров CAS
         if await is_global_spammer(user_id):
@@ -224,9 +225,9 @@ async def handle_start_private(message: Message, bot: Bot):
         target_word, markup = generate_emoji_captcha(chat_id, user_id, lang)
         
         text = TRANSLATIONS[lang]["greet"].format(
-            name=message.from_user.first_name,
-            chat_name=chat_name,
-            target_word=target_word.upper()
+            name=html.escape(message.from_user.first_name),
+            chat_name=html.escape(chat_name),
+            target_word=html.escape(target_word.upper())
         )
         
         await message.answer(text=text, reply_markup=markup, parse_mode="HTML")
