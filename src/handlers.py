@@ -344,7 +344,7 @@ async def handle_captcha_click(callback: CallbackQuery, bot: Bot):
                     group_url = f"https://t.me/c/{chat_id_str}"
                     
             markup_return = InlineKeyboardMarkup(inline_keyboard=[
-                [InlineKeyboardButton(text=TRANSLATIONS[lang]["btn_return"], url=group_url)]
+                [InlineKeyboardButton(text=TRANSLATIONS[lang]["btn_return"], url=group_url, style="primary")]
             ])
             
             await callback.message.edit_text(TRANSLATIONS[lang]["success"], reply_markup=markup_return)
