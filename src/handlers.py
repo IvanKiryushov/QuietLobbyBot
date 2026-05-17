@@ -2,8 +2,9 @@ import asyncio
 import aiohttp
 import logging
 import time
+import os
 from aiogram import Router, F, Bot
-from aiogram.types import ChatMemberUpdated, ChatPermissions, Message, CallbackQuery, InlineKeyboardMarkup, InlineKeyboardButton
+from aiogram.types import ChatMemberUpdated, ChatPermissions, Message, CallbackQuery, InlineKeyboardMarkup, InlineKeyboardButton, FSInputFile
 from aiogram.filters.chat_member_updated import ChatMemberUpdatedFilter, IS_NOT_MEMBER, MEMBER
 from aiogram.filters import Command
 from aiogram.exceptions import TelegramAPIError
@@ -162,6 +163,19 @@ async def handle_new_member(message: Message, bot: Bot):
             
         except TelegramAPIError as e:
             logger.error(f"Не удалось отправить приветственное сообщение в группу: {e}")
+
+
+@router.message(F.left_chat_member)
+async def handle_left_chat_member(message: Message):
+    """
+    Мгновенно удаляет служебные системные сообщения Telegram вида 'Пользователь покинул группу',
+    чтобы чат оставался абсолютно чистым.
+    """
+    try:
+        await message.delete()
+        logger.info(f"[ОЧИСТКА] Системное сообщение о выходе в чате {message.chat.id} успешно удалено.")
+    except TelegramAPIError as e:
+        logger.warning(f"Не удалось удалить системное сообщение о выходе: {e}")
 
 
 @router.message(Command(commands=["start"]), F.chat.type == "private")
@@ -334,3 +348,173 @@ async def handle_captcha_click(callback: CallbackQuery, bot: Bot):
     except TelegramAPIError as e:
         logger.error(f"Ошибка API при клике по капче: {e}")
         await callback.answer("Произошла ошибка, попробуйте еще раз.", show_alert=True)
+
+
+def get_last_log_lines(n: int) -> list:
+    """
+    Возвращает последние N строк из файла bot.log.
+    """
+    log_file_path = "bot.log"
+    if not os.path.exists(log_file_path):
+        return ["Файл логов bot.log пока не создан."]
+    try:
+        with open(log_file_path, "r", encoding="utf-8") as f:
+            lines = f.readlines()
+            if not lines:
+                return ["Файл логов пуст."]
+            return lines[-n:]
+    except Exception as e:
+        return [f"Ошибка при чтении логов: {e}"]
+
+
+def format_log_message(lines: list, n: int) -> str:
+    """
+    Форматирует строки логов для моноширинного вывода в Telegram
+    с защитой от превышения лимита в 4096 символов.
+    """
+    import html
+    header = f"<b>Последние {len(lines)} строк логов:</b>\n"
+    log_text = "".join(lines)
+    escaped_log = html.escape(log_text)
+    
+    # Резервируем место под теги и заголовок
+    max_code_len = 4096 - len(header) - 35
+    if len(escaped_log) > max_code_len:
+        escaped_log = escaped_log[-max_code_len:]
+        # Обрезаем первую строку до ближайшего переноса, чтобы не показывать огрызки строк
+        newline_idx = escaped_log.find("\n")
+        if newline_idx != -1:
+            escaped_log = escaped_log[newline_idx + 1:]
+        escaped_log = "... [логи обрезаны сверху из-за лимита сообщений] ...\n" + escaped_log
+        
+    return f"{header}<pre><code>{escaped_log}</code></pre>"
+
+
+def generate_logs_keyboard():
+    """
+    Генерирует инлайн-кнопки быстрого выбора количества строк логов.
+    """
+    buttons = [
+        [
+            InlineKeyboardButton(text="10 строк", callback_data="log_lines:10"),
+            InlineKeyboardButton(text="20 строк", callback_data="log_lines:20"),
+            InlineKeyboardButton(text="50 строк", callback_data="log_lines:50"),
+        ]
+    ]
+    return InlineKeyboardMarkup(inline_keyboard=buttons)
+
+
+@router.message(Command(commands=["logs"]), F.chat.type == "private")
+async def handle_get_logs(message: Message):
+    """
+    Показывает логи бота в ЛС администратору.
+    Поддерживает аргументы, например: /logs 30
+    Если аргументов нет, показывает меню с кнопками.
+    """
+    admin_id_str = os.getenv("ADMIN_ID")
+    if not admin_id_str:
+        await message.answer("Ошибка: ADMIN_ID не настроен в файле .env.")
+        return
+        
+    try:
+        admin_id = int(admin_id_str)
+    except ValueError:
+        await message.answer("Ошибка: ADMIN_ID в .env должен быть числом.")
+        return
+        
+    if message.from_user.id != admin_id:
+        await message.answer("У вас нет прав для просмотра логов.")
+        return
+        
+    # Проверяем аргументы команды (например, /logs 15)
+    args = message.text.split()
+    if len(args) == 2:
+        try:
+            n = int(args[1])
+            if n <= 0:
+                await message.answer("Количество строк должно быть больше 0.")
+                return
+            n = min(n, 200)  # Ограничиваем разумным максимумом
+            lines = get_last_log_lines(n)
+            text = format_log_message(lines, n)
+            await message.answer(text, parse_mode="HTML", reply_markup=generate_logs_keyboard())
+            return
+        except ValueError:
+            pass
+            
+    # Если аргументов нет, отправляем приветственное интерактивное меню
+    await message.answer(
+        "Выбери количество строк для просмотра или напиши команду с числом, например: <code>/logs 30</code>",
+        parse_mode="HTML",
+        reply_markup=generate_logs_keyboard()
+    )
+
+
+@router.callback_query(F.data.startswith("log_lines:"))
+async def handle_log_lines_callback(callback: CallbackQuery):
+    """
+    Обрабатывает нажатие кнопок выбора количества строк логов,
+    обновляя текущее сообщение в реальном времени.
+    """
+    admin_id_str = os.getenv("ADMIN_ID")
+    if not admin_id_str:
+        await callback.answer("ADMIN_ID не настроен.", show_alert=True)
+        return
+        
+    try:
+        admin_id = int(admin_id_str)
+    except ValueError:
+        await callback.answer("ADMIN_ID должен быть числом.", show_alert=True)
+        return
+        
+    if callback.from_user.id != admin_id:
+        await callback.answer("Нет прав.", show_alert=True)
+        return
+        
+    try:
+        n = int(callback.data.split(":")[1])
+        lines = get_last_log_lines(n)
+        text = format_log_message(lines, n)
+        
+        await callback.message.edit_text(
+            text=text,
+            parse_mode="HTML",
+            reply_markup=generate_logs_keyboard()
+        )
+        await callback.answer()
+    except TelegramAPIError as e:
+        logger.error(f"Не удалось обновить сообщение с логами: {e}")
+        await callback.answer("Ошибка обновления логов.", show_alert=True)
+
+
+@router.message(Command(commands=["clear_logs"]), F.chat.type == "private")
+async def handle_clear_logs(message: Message):
+    """
+    Очищает файл логов bot.log.
+    """
+    admin_id_str = os.getenv("ADMIN_ID")
+    if not admin_id_str:
+        await message.answer("Ошибка: ADMIN_ID не настроен в файле .env.")
+        return
+        
+    try:
+        admin_id = int(admin_id_str)
+    except ValueError:
+        await message.answer("Ошибка: ADMIN_ID в .env должен быть числом.")
+        return
+        
+    if message.from_user.id != admin_id:
+        await message.answer("У вас нет прав для очистки логов.")
+        return
+        
+    log_file_path = "bot.log"
+    if not os.path.exists(log_file_path):
+        await message.answer("Файл логов bot.log не найден.")
+        return
+        
+    try:
+        with open(log_file_path, "w", encoding="utf-8") as f:
+            f.truncate(0)
+        await message.answer("Файл логов bot.log успешно очищен.")
+    except Exception as e:
+        await message.answer(f"Не удалось очистить файл логов: {e}")
