@@ -1,6 +1,7 @@
 import asyncio
 import logging
 import os
+from logging.handlers import RotatingFileHandler
 from aiogram import Bot, Dispatcher
 from dotenv import load_dotenv
 
@@ -10,10 +11,27 @@ load_dotenv()
 # Импортируем наши роутеры (хендлеры)
 from handlers import router
 
-# Настройка логирования
+# Настройка логирования: в консоль и в файл bot.log с ротацией
+log_formatter = logging.Formatter('%(asctime)s - %(name)s - %(levelname)s - %(message)s')
+
+# Обработчик для записи логов в файл (до 5 МБ, храним 3 резервные копии)
+file_handler = RotatingFileHandler(
+    'bot.log',
+    maxBytes=5*1024*1024,
+    backupCount=3,
+    encoding='utf-8'
+)
+file_handler.setFormatter(log_formatter)
+file_handler.setLevel(logging.INFO)
+
+# Обработчик для вывода в консоль терминала
+console_handler = logging.StreamHandler()
+console_handler.setFormatter(log_formatter)
+console_handler.setLevel(logging.INFO)
+
 logging.basicConfig(
     level=logging.INFO,
-    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s'
+    handlers=[file_handler, console_handler]
 )
 logger = logging.getLogger(__name__)
 

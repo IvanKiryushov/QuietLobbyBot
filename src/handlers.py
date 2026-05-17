@@ -66,103 +66,102 @@ async def verification_timeout_task(chat_id: int, user_id: int, bot: Bot, lang: 
             logger.error(f"Не удалось кикнуть пользователя {user_id} по таймауту: {e}")
 
 
-@router.chat_member(ChatMemberUpdatedFilter(IS_NOT_MEMBER >> MEMBER))
-async def handle_new_member(event: ChatMemberUpdated, bot: Bot):
-    """
-    Ловит вступление нового участника, проверяет по CAS, мутит его
-    и отправляет в группу временное сообщение с кнопкой перехода в ЛС.
-    """
-    chat_id = event.chat.id
-    user_id = event.new_chat_member.user.id
-    user_name = event.new_chat_member.user.first_name
-    chat_name = event.chat.title or "нашего чата"
-    
-    # 🔥 1. Проверяем в глобальной базе спамеров CAS
-    if await is_global_spammer(user_id):
-        try:
-            await bot.ban_chat_member(chat_id=chat_id, user_id=user_id)
-            logger.info(f"[CAS] Спамер {user_id} обнаружен при входе и забанен.")
-        except TelegramAPIError as e:
-            logger.error(f"Не удалось забанить спамера {user_id}: {e}")
-        return
-
-    # 2. Накладываем Mute (запрет на отправку любых сообщений)
-    try:
-        await bot.restrict_chat_member(
-            chat_id=chat_id,
-            user_id=user_id,
-            permissions=ChatPermissions(
-                can_send_messages=False,
-                can_send_audios=False,
-                can_send_documents=False,
-                can_send_photos=False,
-                can_send_videos=False,
-                can_send_video_notes=False,
-                can_send_voice_notes=False,
-                can_send_polls=False,
-                can_send_other_messages=False,
-                can_add_web_page_previews=False
-            )
-        )
-        logger.info(f"[🛡️ MUTE] Пользователь {user_id} временно ограничен в чате {chat_id}.")
-    except TelegramAPIError as e:
-        logger.error(f"Не удалось наложить MUTE на {user_id}: {e}")
-        return
-
-    # Определение языка пользователя
-    raw_lang = event.new_chat_member.user.language_code
-    user_lang = raw_lang or "en"
-    if user_lang.startswith("ru"):
-        lang = "ru"
-    elif user_lang.startswith("vi"):
-        lang = "vi"
-    else:
-        lang = "en"
-
-    # 3. Отправляем временное сообщение в группу
-    bot_info = await bot.get_me()
-    bot_username = bot_info.username
-    
-    # Создаем кнопку со ссылкой на ЛС бота с параметром start=verify_CHATID
-    # Заменяем минус в ID чата на символ 'm' для соответствия правилам Telegram (парсинг параметров)
-    clean_chat_id = str(chat_id).replace("-", "m")
-    verify_url = f"https://t.me/{bot_username}?start=verify_{clean_chat_id}"
-    
-    markup = InlineKeyboardMarkup(inline_keyboard=[
-        [InlineKeyboardButton(text=TRANSLATIONS[lang]["btn_verify"], url=verify_url)]
-    ])
-    
-    text = TRANSLATIONS[lang]["group_greet"].format(name=user_name, chat_name=chat_name)
-    
-    try:
-        msg = await bot.send_message(
-            chat_id=chat_id,
-            text=text,
-            reply_markup=markup,
-            parse_mode="HTML"
-        )
-        # Запоминаем ID сообщения, чтобы удалить его позже
-        group_prompts[(chat_id, user_id)] = msg.message_id
-        logger.info(f"[ШЛЮЗ] Временное сообщение отправлено в чат {chat_id} для {user_id}. MsgID: {msg.message_id}")
-        
-        # Запускаем фоновую задачу таймаута
-        asyncio.create_task(verification_timeout_task(chat_id, user_id, bot, lang))
-        
-    except TelegramAPIError as e:
-        logger.error(f"Не удалось отправить приветственное сообщение в группу: {e}")
-
-
 @router.message(F.new_chat_members)
-async def handle_new_chat_members_service_message(message: Message):
+async def handle_new_member(message: Message, bot: Bot):
     """
-    Мгновенно удаляет служебные системные сообщения Telegram вида 'Пользователь вступил в группу',
-    чтобы чат оставался абсолютно чистым.
+    Ловит вступление нового участника (включая повторные входы), проверяет по CAS,
+    мутит его, удаляет системное сообщение и отправляет капчу.
     """
+    chat_id = message.chat.id
+    chat_name = message.chat.title or "нашего чата"
+    
+    # Мгновенно удаляем служебное сообщение о входе
     try:
         await message.delete()
-        logger.info(f"[ОЧИСТКА] Системное сообщение о входе в чате {message.chat.id} успешно удалено.")
+        logger.info(f"[ОЧИСТКА] Системное сообщение о входе в чате {chat_id} успешно удалено.")
     except TelegramAPIError as e:
         logger.warning(f"Не удалось удалить системное сообщение о входе: {e}")
+
+    for member in message.new_chat_members:
+        if member.is_bot:
+            continue
+            
+        user_id = member.id
+        user_name = member.first_name
+        
+        # 1. Проверяем в глобальной базе спамеров CAS
+        if await is_global_spammer(user_id):
+            try:
+                await bot.ban_chat_member(chat_id=chat_id, user_id=user_id)
+                logger.info(f"[CAS] Спамер {user_id} обнаружен при входе и забанен.")
+            except TelegramAPIError as e:
+                logger.error(f"Не удалось забанить спамера {user_id}: {e}")
+            continue
+
+        # 2. Накладываем Mute (запрет на отправку любых сообщений)
+        try:
+            await bot.restrict_chat_member(
+                chat_id=chat_id,
+                user_id=user_id,
+                permissions=ChatPermissions(
+                    can_send_messages=False,
+                    can_send_audios=False,
+                    can_send_documents=False,
+                    can_send_photos=False,
+                    can_send_videos=False,
+                    can_send_video_notes=False,
+                    can_send_voice_notes=False,
+                    can_send_polls=False,
+                    can_send_other_messages=False,
+                    can_add_web_page_previews=False
+                )
+            )
+            logger.info(f"[MUTE] Пользователь {user_id} временно ограничен в чате {chat_id}.")
+        except TelegramAPIError as e:
+            logger.error(f"Не удалось наложить MUTE на {user_id}: {e}")
+            continue
+
+        # Определение языка пользователя
+        raw_lang = member.language_code
+        user_lang = raw_lang or "en"
+        if user_lang.startswith("ru"):
+            lang = "ru"
+        elif user_lang.startswith("vi"):
+            lang = "vi"
+        else:
+            lang = "en"
+
+        # 3. Отправляем временное сообщение в группу
+        bot_info = await bot.get_me()
+        bot_username = bot_info.username
+        
+        # Создаем кнопку со ссылкой на ЛС бота с параметром start=verify_CHATID
+        # Заменяем минус в ID чата на символ 'm' для соответствия правилам Telegram (парсинг параметров)
+        clean_chat_id = str(chat_id).replace("-", "m")
+        verify_url = f"https://t.me/{bot_username}?start=verify_{clean_chat_id}"
+        
+        markup = InlineKeyboardMarkup(inline_keyboard=[
+            [InlineKeyboardButton(text=TRANSLATIONS[lang]["btn_verify"], url=verify_url, style="success")]
+        ])
+        
+        text = TRANSLATIONS[lang]["group_greet"].format(name=user_name, chat_name=chat_name)
+        
+        try:
+            msg = await bot.send_message(
+                chat_id=chat_id,
+                text=text,
+                reply_markup=markup,
+                parse_mode="HTML"
+            )
+            # Запоминаем ID сообщения, чтобы удалить его позже
+            group_prompts[(chat_id, user_id)] = msg.message_id
+            logger.info(f"[ШЛЮЗ] Временное сообщение отправлено в чат {chat_id} для {user_id}. MsgID: {msg.message_id}")
+            
+            # Запускаем фоновую задачу таймаута
+            asyncio.create_task(verification_timeout_task(chat_id, user_id, bot, lang))
+            
+        except TelegramAPIError as e:
+            logger.error(f"Не удалось отправить приветственное сообщение в группу: {e}")
 
 
 @router.message(Command(commands=["start"]), F.chat.type == "private")
