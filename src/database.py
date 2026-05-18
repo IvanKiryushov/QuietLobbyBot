@@ -49,6 +49,14 @@ async def get_chat_settings(chat_id: int) -> dict:
                 return dict(row)
             return {}
 
+async def get_all_active_chats() -> list:
+    """Возвращает список всех активных чатов из базы данных."""
+    async with aiosqlite.connect(DB_PATH) as db:
+        db.row_factory = aiosqlite.Row
+        async with db.execute('SELECT * FROM chat_settings WHERE is_active = 1') as cursor:
+            rows = await cursor.fetchall()
+            return [dict(row) for row in rows]
+
 async def update_chat_setting(chat_id: int, key: str, value):
     """Обновляет конкретную настройку для чата."""
     allowed_keys = ['language', 'captcha_strictness']

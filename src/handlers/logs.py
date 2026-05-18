@@ -1,9 +1,11 @@
 import os
 import logging
-from aiogram import Router, F
+from aiogram import Router, F, Bot
 from aiogram.types import Message, CallbackQuery, InlineKeyboardMarkup, InlineKeyboardButton
 from aiogram.filters import Command
 from aiogram.exceptions import TelegramAPIError
+
+from database import get_all_active_chats
 
 logger = logging.getLogger(__name__)
 logs_router = Router()
@@ -131,3 +133,37 @@ async def handle_clear_logs(message: Message):
         await message.answer("Файл логов bot.log успешно очищен.")
     except Exception as e:
         await message.answer(f"Не удалось очистить файл логов: {e}")
+
+@logs_router.message(Command(commands=["chats"]), F.chat.type == "private")
+async def handle_get_chats(message: Message, bot: Bot):
+    admin_id_str = os.getenv("ADMIN_ID")
+    if not admin_id_str:
+        await message.answer("Ошибка: ADMIN_ID не настроен в файле .env.")
+        return
+    try:
+        admin_id = int(admin_id_str)
+    except ValueError:
+        await message.answer("Ошибка: ADMIN_ID в .env должен быть числом.")
+        return
+    if message.from_user.id != admin_id:
+        await message.answer("У вас нет прав для просмотра чатов.")
+        return
+
+    chats = await get_all_active_chats()
+    if not chats:
+        await message.answer("Бот пока не добавлен ни в один активный чат.")
+        return
+
+    text = "<b>Список активных чатов, где добавлен бот:</b>\n\n"
+    for idx, chat_data in enumerate(chats, 1):
+        chat_id = chat_data["chat_id"]
+        lang = chat_data.get("language", "en")
+        try:
+            chat = await bot.get_chat(chat_id)
+            title = chat.title or "Без названия"
+        except TelegramAPIError:
+            title = "Чат недоступен (бот удален или заблокирован)"
+        
+        text += f"{idx}. <b>{title}</b>\n   ID: <code>{chat_id}</code> | Язык: <code>{lang}</code>\n\n"
+
+    await message.answer(text, parse_mode="HTML")
