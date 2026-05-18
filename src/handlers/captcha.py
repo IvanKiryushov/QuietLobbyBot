@@ -30,7 +30,7 @@ async def is_global_spammer(user_id: int) -> bool:
             async with session.get(url, timeout=3.0) as response:
                 if response.status == 200:
                     data = await response.json()
-                    if data.get("ok") and data.get("result", {}).get("offender"):
+                    if data.get("ok"):
                         logger.warning(f"[🛡️ CAS] Обнаружен известный спамер: {user_id}")
                         return True
     except Exception as e:
@@ -116,6 +116,9 @@ async def handle_new_member(message: Message, bot: Bot):
             continue
             
         user_id = member.id
+        #if user_id == ТВОЙ_ТЕСТОВЫЙ_ID:
+            # Для теста притворяемся реальным спамером
+        user_id = 8393286363
         user_name = html.escape(member.first_name)
         
         if await is_global_spammer(user_id):
