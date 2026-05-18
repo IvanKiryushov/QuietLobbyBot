@@ -141,7 +141,8 @@ async def handle_new_member(message: Message, bot: Bot):
                 chat_id=chat_id,
                 text=TRANSLATIONS[lang]["group_greet"].format(name=user_name, chat_name=chat_name),
                 reply_markup=markup,
-                parse_mode="HTML"
+                parse_mode="HTML",
+                disable_notification=True
             )
             group_prompts[(chat_id, user_id)] = msg.message_id
             asyncio.create_task(verification_timeout_task(chat_id, user_id, bot, lang))
