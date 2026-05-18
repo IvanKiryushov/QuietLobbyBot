@@ -9,5 +9,7 @@ services:
       # Прокидываем файлы БД и логов на хост-машину
       - ./bot_data.db:/app/bot_data.db
       - ./bot.log:/app/bot.log
+      # Прокидываем исходный код для мгновенного обновления без пересборки
+      - ./src:/app/src
     env_file:
       - .env
