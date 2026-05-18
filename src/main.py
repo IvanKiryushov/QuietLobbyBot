@@ -10,6 +10,8 @@ load_dotenv()
 
 # Импортируем наши роутеры (хендлеры)
 from handlers import router
+from admin_ui import admin_router
+from database import init_db
 
 # Настройка логирования: в консоль и в файл bot.log с ротацией
 log_formatter = logging.Formatter('%(asctime)s - %(name)s - %(levelname)s - %(message)s')
@@ -42,11 +44,15 @@ async def main():
         logger.error("BOT_TOKEN не найден в переменных окружения!")
         return
 
+    # Инициализация базы данных
+    await init_db()
+
     # Инициализация бота и диспетчера
     bot = Bot(token=bot_token)
     dp = Dispatcher()
 
     # Подключаем роутер с хендлерами
+    dp.include_router(admin_router)
     dp.include_router(router)
 
     # Запускаем пуллинг
