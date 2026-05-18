@@ -36,7 +36,8 @@ logging.basicConfig(
     handlers=[file_handler, console_handler]
 )
 # Отключаем спам от внутренних событий aiogram (оставляем только ошибки/предупреждения)
-logging.getLogger("aiogram").setLevel(logging.WARNING)
+for logger_name in ["aiogram", "aiogram.event", "aiogram.dispatcher"]:
+    logging.getLogger(logger_name).setLevel(logging.WARNING)
 logger = logging.getLogger(__name__)
 
 async def main():
