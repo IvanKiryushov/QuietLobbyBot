@@ -5,7 +5,7 @@ from aiogram.types import ChatMemberUpdated, Message, InlineKeyboardMarkup, Inli
 from aiogram.filters import Command
 from aiogram.exceptions import TelegramAPIError
 
-from database import register_chat, deactivate_chat
+from database import register_chat, deactivate_chat, migrate_chat_id
 
 logger = logging.getLogger(__name__)
 chat_router = Router()
@@ -46,6 +46,21 @@ async def handle_settings_command(message: Message, bot: Bot):
     
     await asyncio.sleep(5)
     try:
-        await msg.delete()
+         await msg.delete()
     except TelegramAPIError:
-        pass
+         pass
+
+@chat_router.message(F.migrate_to_chat_id)
+async def handle_migrate_to(message: Message):
+    old_chat_id = message.chat.id
+    new_chat_id = message.migrate_to_chat_id
+    logger.info(f"[DB] Чат мигрировал: {old_chat_id} -> {new_chat_id}")
+    await migrate_chat_id(old_chat_id, new_chat_id)
+
+@chat_router.message(F.migrate_from_chat_id)
+async def handle_migrate_from(message: Message):
+    old_chat_id = message.migrate_from_chat_id
+    new_chat_id = message.chat.id
+    logger.info(f"[DB] Чат мигрировал (обратное): {old_chat_id} -> {new_chat_id}")
+    await migrate_chat_id(old_chat_id, new_chat_id)
+

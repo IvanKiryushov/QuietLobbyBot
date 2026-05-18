@@ -88,3 +88,46 @@ async def update_chat_setting(chat_id: int, key: str, value):
             UPDATE chat_settings SET {key} = ? WHERE chat_id = ?
         ''', (value, chat_id))
         await db.commit()
+
+async def migrate_chat_id(old_chat_id: int, new_chat_id: int):
+    """Мигрирует настройки чата при преобразовании обычной группы в супергруппу."""
+    async with aiosqlite.connect(DB_PATH) as db:
+        db.row_factory = aiosqlite.Row
+        
+        # Получаем старые настройки
+        async with db.execute('SELECT * FROM chat_settings WHERE chat_id = ?', (old_chat_id,)) as cursor:
+            old_settings = await cursor.fetchone()
+            
+        if not old_settings:
+            logger.warning(f"Попытка миграции для несуществующего старого чата {old_chat_id}")
+            return
+            
+        # Проверяем, существует ли уже запись для новой группы
+        async with db.execute('SELECT * FROM chat_settings WHERE chat_id = ?', (new_chat_id,)) as cursor:
+            new_exists = await cursor.fetchone()
+            
+        if new_exists:
+            # Обновляем новый чат настройками из старого, а старый деактивируем/удаляем
+            await db.execute('''
+                UPDATE chat_settings 
+                SET language = ?, captcha_strictness = ?, welcome_message = ?, title = ?, is_active = 1
+                WHERE chat_id = ?
+            ''', (
+                old_settings['language'],
+                old_settings['captcha_strictness'],
+                old_settings['welcome_message'],
+                old_settings['title'],
+                new_chat_id
+            ))
+            await db.execute('DELETE FROM chat_settings WHERE chat_id = ?', (old_chat_id,))
+            logger.info(f"Настройки чата {old_chat_id} объединены с новым супергрупповым ID {new_chat_id}")
+        else:
+            # Если новой записи еще нет, просто обновляем ID в старой строке
+            await db.execute('''
+                UPDATE chat_settings 
+                SET chat_id = ?, is_active = 1 
+                WHERE chat_id = ?
+            ''', (new_chat_id, old_chat_id))
+            logger.info(f"ID чата {old_chat_id} изменен на новый супергрупповой ID {new_chat_id}")
+            
+        await db.commit()
