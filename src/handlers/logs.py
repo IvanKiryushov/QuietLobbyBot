@@ -166,12 +166,13 @@ async def handle_get_chats(message: Message, bot: Bot):
         for idx, chat_data in enumerate(chats, 1):
             chat_id = chat_data["chat_id"]
             lang = chat_data.get("language", "en")
+            title_cached = chat_data.get("title") or "Без названия"
             try:
                 chat = await bot.get_chat(chat_id)
-                title = chat.title or "Без названия"
+                title = chat.title or title_cached
                 title = html.escape(title)
             except TelegramAPIError:
-                title = "Чат недоступен (бот удален или заблокирован)"
+                title = f"{html.escape(title_cached)} (Чат недоступен)"
             
             text += f"{idx}. <b>{title}</b>\n   ID: <code>{chat_id}</code> | Язык: <code>{lang}</code>\n\n"
 

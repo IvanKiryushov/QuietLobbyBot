@@ -104,7 +104,7 @@ async def handle_new_member(message: Message, bot: Bot):
     chat_name = html.escape(message.chat.title or "нашего чата")
     
     # Автоподхват группы в БД при вступлении нового пользователя
-    await register_chat(chat_id)
+    await register_chat(chat_id, message.chat.title or "Группа")
     
     try:
         await message.delete()

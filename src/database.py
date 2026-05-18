@@ -18,17 +18,29 @@ async def init_db():
                 joined_at TIMESTAMP
             )
         ''')
+        # Безопасная миграция: добавляем колонку title, если её еще нет в существующей таблице
+        try:
+            await db.execute("ALTER TABLE chat_settings ADD COLUMN title TEXT")
+        except aiosqlite.OperationalError:
+            pass  # Колонка уже создана
         await db.commit()
         logger.info("База данных инициализирована.")
 
-async def register_chat(chat_id: int):
-    """Регистрирует новый чат в БД при добавлении бота, или активирует существующий."""
+async def register_chat(chat_id: int, title: str = None):
+    """Регистрирует новый чат в БД при добавлении бота, или активирует существующий с сохранением названия."""
     async with aiosqlite.connect(DB_PATH) as db:
-        await db.execute('''
-            INSERT INTO chat_settings (chat_id, is_active, joined_at)
-            VALUES (?, 1, ?)
-            ON CONFLICT(chat_id) DO UPDATE SET is_active = 1
-        ''', (chat_id, datetime.now()))
+        if title:
+            await db.execute('''
+                INSERT INTO chat_settings (chat_id, title, is_active, joined_at)
+                VALUES (?, ?, 1, ?)
+                ON CONFLICT(chat_id) DO UPDATE SET is_active = 1, title = ?
+            ''', (chat_id, title, datetime.now(), title))
+        else:
+            await db.execute('''
+                INSERT INTO chat_settings (chat_id, is_active, joined_at)
+                VALUES (?, 1, ?)
+                ON CONFLICT(chat_id) DO UPDATE SET is_active = 1
+            ''', (chat_id, datetime.now()))
         await db.commit()
 
 async def deactivate_chat(chat_id: int):

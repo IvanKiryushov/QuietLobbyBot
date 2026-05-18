@@ -14,8 +14,9 @@ chat_router = Router()
 async def bot_member_updated(event: ChatMemberUpdated):
     """Отслеживает добавление и удаление бота из чатов для ведения базы."""
     if event.new_chat_member.status in ["member", "administrator"]:
-        await register_chat(event.chat.id)
-        logger.info(f"[DB] Бот добавлен или права обновлены в чате {event.chat.id}")
+        chat_title = event.chat.title or "Группа"
+        await register_chat(event.chat.id, chat_title)
+        logger.info(f"[DB] Бот добавлен или права обновлены в чате {event.chat.id} ({chat_title})")
     elif event.new_chat_member.status in ["kicked", "left"]:
         await deactivate_chat(event.chat.id)
         logger.info(f"[DB] Бот удален из чата {event.chat.id}")
@@ -23,7 +24,8 @@ async def bot_member_updated(event: ChatMemberUpdated):
 @chat_router.message(Command(commands=["settings"]), F.chat.type.in_(["group", "supergroup"]))
 async def handle_settings_command(message: Message, bot: Bot):
     """Показывает кнопку для настройки бота в ЛС и автоматически регистрирует чат."""
-    await register_chat(message.chat.id)
+    chat_title = message.chat.title or "Группа"
+    await register_chat(message.chat.id, chat_title)
     try:
         await message.delete()
     except TelegramAPIError:
@@ -42,7 +44,7 @@ async def handle_settings_command(message: Message, bot: Bot):
         reply_markup=markup
     )
     
-    await asyncio.sleep(15)
+    await asyncio.sleep(5)
     try:
         await msg.delete()
     except TelegramAPIError:
