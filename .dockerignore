@@ -1,0 +1,11 @@
+.git
+.venv
+venv
+*.db
+*.log
+__pycache__
+.tmp_log.txt
+.tmp_install_log.txt
+.tmp_telethon_install.txt
+tester_session.session
+tester_session.session-journal
