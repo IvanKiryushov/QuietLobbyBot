@@ -1,0 +1,13 @@
+version: '3.8'
+
+services:
+  bot:
+    build: .
+    container_name: quiet_lobby_bot
+    restart: unless-stopped
+    volumes:
+      # Прокидываем файлы БД и логов на хост-машину
+      - ./bot_data.db:/app/bot_data.db
+      - ./bot.log:/app/bot.log
+    env_file:
+      - .env
