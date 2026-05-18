@@ -9,7 +9,7 @@ from aiogram.filters import Command
 from aiogram.exceptions import TelegramAPIError
 
 from keyboards import generate_emoji_captcha, TRANSLATIONS
-from database import get_chat_settings
+from database import get_chat_settings, register_chat
 
 logger = logging.getLogger(__name__)
 captcha_router = Router()
@@ -102,6 +102,9 @@ async def verification_timeout_task(chat_id: int, user_id: int, bot: Bot, lang: 
 async def handle_new_member(message: Message, bot: Bot):
     chat_id = message.chat.id
     chat_name = html.escape(message.chat.title or "нашего чата")
+    
+    # Автоподхват группы в БД при вступлении нового пользователя
+    await register_chat(chat_id)
     
     try:
         await message.delete()

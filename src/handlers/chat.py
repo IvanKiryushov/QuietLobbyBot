@@ -22,7 +22,8 @@ async def bot_member_updated(event: ChatMemberUpdated):
 
 @chat_router.message(Command(commands=["settings"]), F.chat.type.in_(["group", "supergroup"]))
 async def handle_settings_command(message: Message, bot: Bot):
-    """Показывает кнопку для настройки бота в ЛС."""
+    """Показывает кнопку для настройки бота в ЛС и автоматически регистрирует чат."""
+    await register_chat(message.chat.id)
     try:
         await message.delete()
     except TelegramAPIError:
