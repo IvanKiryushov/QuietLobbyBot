@@ -4,10 +4,17 @@ from aiogram.types import Message, CallbackQuery, InlineKeyboardMarkup, InlineKe
 from aiogram.filters import Command
 from aiogram.exceptions import TelegramAPIError
 
+from aiogram.fsm.state import StatesGroup, State
+from aiogram.fsm.context import FSMContext
+
 from database import get_chat_settings, update_chat_setting
 
 logger = logging.getLogger(__name__)
 admin_router = Router()
+
+class AdminSettings(StatesGroup):
+    waiting_for_welcome = State()
+
 
 async def is_chat_admin(bot: Bot, chat_id: int, user_id: int) -> bool:
     """Проверяет, является ли пользователь администратором или создателем чата."""
@@ -24,13 +31,16 @@ def generate_settings_keyboard(chat_id: int, settings: dict) -> InlineKeyboardMa
     """Генерирует клавиатуру настроек для конкретного чата."""
     lang = settings.get('language', 'en')
     strictness = settings.get('captcha_strictness', 1)
+    welcome = settings.get('welcome_message')
     
     lang_text = f"Язык: {'🇷🇺 RU' if lang == 'ru' else '🇻🇳 VI' if lang == 'vi' else '🇬🇧 EN'}"
     strictness_text = f"Строгость: {strictness}"
+    welcome_text = "👋 Приветствие: Настроено" if welcome else "👋 Приветствие: Выкл"
     
     buttons = [
         [InlineKeyboardButton(text=lang_text, callback_data=f"set_lang:{chat_id}:{lang}")],
         [InlineKeyboardButton(text=strictness_text, callback_data=f"set_strict:{chat_id}:{strictness}")],
+        [InlineKeyboardButton(text=welcome_text, callback_data=f"set_welcome:{chat_id}")],
         [InlineKeyboardButton(text="Закрыть", callback_data="set_close")]
     ]
     return InlineKeyboardMarkup(inline_keyboard=buttons)
@@ -125,6 +135,138 @@ async def change_strictness_callback(callback: CallbackQuery, bot: Bot):
     await callback.answer(f"Строгость изменена на {next_strict}")
 
 @admin_router.callback_query(F.data == "set_close")
-async def close_settings_callback(callback: CallbackQuery):
+async def close_settings_callback(callback: CallbackQuery, state: FSMContext):
+    await state.clear()
     await callback.message.delete()
     await callback.answer("Настройки закрыты.")
+
+@admin_router.callback_query(F.data.startswith("set_welcome:"))
+async def set_welcome_callback(callback: CallbackQuery, state: FSMContext, bot: Bot):
+    _, chat_id_str = callback.data.split(":")
+    chat_id = int(chat_id_str)
+    
+    if not await is_chat_admin(bot, chat_id, callback.from_user.id):
+        await callback.answer("У вас нет прав!", show_alert=True)
+        return
+        
+    await state.update_data(settings_chat_id=chat_id, settings_msg_id=callback.message.message_id)
+    await state.set_state(AdminSettings.waiting_for_welcome)
+    
+    settings = await get_chat_settings(chat_id)
+    welcome = settings.get('welcome_message')
+    
+    buttons = []
+    if welcome:
+        buttons.append([InlineKeyboardButton(text="🗑️ Отключить приветствие", callback_data=f"del_welcome:{chat_id}")])
+    buttons.append([InlineKeyboardButton(text="❌ Отмена", callback_data=f"cancel_welcome:{chat_id}")])
+    markup = InlineKeyboardMarkup(inline_keyboard=buttons)
+    
+    await callback.message.edit_text(
+        "💬 <b>Настройка приветственного сообщения</b>\n\n"
+        "Отправь мне текст, который бот пришлет в чат после успешного прохождения капчи.\n\n"
+        "ℹ️ Ты можешь использовать:\n"
+        "• <code>{name}</code> — имя пользователя\n"
+        "• <code>{mention}</code> — кликабельное упоминание пользователя\n\n"
+        "🌟 <b>Добавление инлайн-кнопок:</b>\n"
+        "Ты можешь добавить одну или несколько кнопок-ссылок к своему приветствию! Для этого просто пиши каждую кнопку с новой строки в формате:\n"
+        "<code>Текст кнопки | ссылка</code>\n"
+        "<i>Пример: Наш канал | t.me/my_channel</i>\n\n"
+        "Для управления настройкой используй инлайн-кнопки ниже:",
+        reply_markup=markup,
+        parse_mode="HTML"
+    )
+    await callback.answer()
+
+@admin_router.callback_query(F.data.startswith("cancel_welcome:"))
+async def cancel_welcome_callback(callback: CallbackQuery, state: FSMContext, bot: Bot):
+    _, chat_id_str = callback.data.split(":")
+    chat_id = int(chat_id_str)
+    
+    await state.clear()
+    await callback.answer("Изменение отменено.")
+    
+    try:
+        chat = await bot.get_chat(chat_id)
+        chat_name = chat.title or str(chat_id)
+    except TelegramAPIError:
+        chat_name = str(chat_id)
+        
+    settings = await get_chat_settings(chat_id)
+    markup = generate_settings_keyboard(chat_id, settings)
+    await callback.message.edit_text(
+        f"⚙️ <b>Настройки для чата:</b> {chat_name}\n\nВыберите параметр для изменения:",
+        reply_markup=markup,
+        parse_mode="HTML"
+    )
+
+@admin_router.callback_query(F.data.startswith("del_welcome:"))
+async def del_welcome_callback(callback: CallbackQuery, state: FSMContext, bot: Bot):
+    _, chat_id_str = callback.data.split(":")
+    chat_id = int(chat_id_str)
+    
+    await update_chat_setting(chat_id, 'welcome_message', None)
+    await state.clear()
+    await callback.answer("Приветствие отключено.", show_alert=True)
+    
+    try:
+        chat = await bot.get_chat(chat_id)
+        chat_name = chat.title or str(chat_id)
+    except TelegramAPIError:
+        chat_name = str(chat_id)
+        
+    settings = await get_chat_settings(chat_id)
+    markup = generate_settings_keyboard(chat_id, settings)
+    await callback.message.edit_text(
+        f"⚙️ <b>Настройки для чата:</b> {chat_name}\n\nВыберите параметр для изменения:",
+        reply_markup=markup,
+        parse_mode="HTML"
+    )
+
+@admin_router.message(AdminSettings.waiting_for_welcome)
+async def process_welcome_message(message: Message, state: FSMContext, bot: Bot):
+    data = await state.get_data()
+    chat_id = data.get("settings_chat_id")
+    settings_msg_id = data.get("settings_msg_id")
+    
+    if not chat_id:
+        await state.clear()
+        return
+        
+    # Сохраняем новое приветствие
+    new_welcome = message.text
+    await update_chat_setting(chat_id, 'welcome_message', new_welcome)
+    await state.clear()
+    
+    # Пытаемся удалить отправленное пользователем сообщение для чистоты
+    try:
+        await message.delete()
+    except TelegramAPIError:
+        pass
+        
+    try:
+        chat = await bot.get_chat(chat_id)
+        chat_name = chat.title or str(chat_id)
+    except TelegramAPIError:
+        chat_name = str(chat_id)
+        
+    settings = await get_chat_settings(chat_id)
+    markup = generate_settings_keyboard(chat_id, settings)
+    
+    # Редактируем исходное сообщение настроек
+    if settings_msg_id:
+        try:
+            await bot.edit_message_text(
+                chat_id=message.from_user.id,
+                message_id=settings_msg_id,
+                text=f"✅ <b>Приветствие успешно сохранено!</b>\n\n⚙️ <b>Настройки для чата:</b> {chat_name}\n\nВыберите параметр для изменения:",
+                reply_markup=markup,
+                parse_mode="HTML"
+            )
+            return
+        except TelegramAPIError:
+            pass
+            
+    # Запасной вариант
+    await message.answer("✅ Приветственное сообщение сохранено!")
+    await message.answer(f"⚙️ <b>Настройки для чата:</b> {chat_name}\n\nВыберите параметр для изменения:", reply_markup=markup, parse_mode="HTML")
+

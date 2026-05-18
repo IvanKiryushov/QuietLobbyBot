@@ -87,7 +87,31 @@ async def get_chat_invite_url(bot: Bot, chat_id: int) -> str:
     clean_id = str(chat_id).replace("-100", "").replace("-", "")
     return f"https://t.me/c/{clean_id}"
 
+def parse_welcome_message(text: str) -> tuple[str, InlineKeyboardMarkup | None]:
+    """Разбирает текст приветствия на собственно сообщение и инлайн-кнопки в формате 'Текст | ссылка'."""
+    lines = text.split("\n")
+    message_lines = []
+    buttons = []
+    
+    for line in lines:
+        if "|" in line:
+            parts = line.split("|")
+            if len(parts) == 2:
+                btn_text = parts[0].strip()
+                btn_url = parts[1].strip()
+                if btn_url.startswith("http://") or btn_url.startswith("https://") or btn_url.startswith("t.me/"):
+                    if btn_url.startswith("t.me/"):
+                        btn_url = "https://" + btn_url
+                    buttons.append([InlineKeyboardButton(text=btn_text, url=btn_url)])
+                    continue
+        message_lines.append(line)
+        
+    formatted_text = "\n".join(message_lines).strip()
+    markup = InlineKeyboardMarkup(inline_keyboard=buttons) if buttons else None
+    return formatted_text, markup
+
 # --- TASKS ---
+
 
 async def verification_timeout_task(chat_id: int, user_id: int, bot: Bot, lang: str):
     """Фоновый таймер: если пользователь не прошел капчу, он кикается."""
@@ -210,7 +234,8 @@ async def handle_captcha_click(callback: CallbackQuery, bot: Bot):
     sent_timestamp = int(parts[4])
     
     if callback.from_user.id != user_id:
-        await callback.answer("Это не твоя кнопка!", show_alert=True)
+        lang = await resolve_language(chat_id, callback.from_user.language_code)
+        await callback.answer(TRANSLATIONS[lang]["not_your_button"], show_alert=True)
         return
         
     reaction_time = time.time() - sent_timestamp
@@ -222,7 +247,7 @@ async def handle_captcha_click(callback: CallbackQuery, bot: Bot):
             await callback.message.edit_text(TRANSLATIONS[lang]["too_fast"], reply_markup=None)
             await kick_user_and_clean(bot, chat_id, user_id)
             return
-
+ 
         if is_correct:
             await bot.restrict_chat_member(chat_id=chat_id, user_id=user_id, permissions=get_permissions(is_muted=False))
             
@@ -240,6 +265,25 @@ async def handle_captcha_click(callback: CallbackQuery, bot: Bot):
             
             await callback.message.edit_text(TRANSLATIONS[lang]["success"], reply_markup=markup_return)
             await callback.answer("Успешно!")
+            
+            # Отправка кастомного приветствия, если оно настроено в БД
+            settings = await get_chat_settings(chat_id)
+            welcome_msg = settings.get("welcome_message")
+            if welcome_msg:
+                user_name = html.escape(callback.from_user.first_name)
+                user_mention = f'<a href="tg://user?id={user_id}">{user_name}</a>'
+                formatted_welcome = welcome_msg.replace("{name}", user_name).replace("{mention}", user_mention)
+                
+                welcome_text, welcome_markup = parse_welcome_message(formatted_welcome)
+                try:
+                    await bot.send_message(
+                        chat_id=chat_id,
+                        text=welcome_text,
+                        reply_markup=welcome_markup,
+                        parse_mode="HTML"
+                    )
+                except TelegramAPIError as e:
+                    logger.error(f"Не удалось отправить кастомное приветствие в чат {chat_id}: {e}")
             
         else:
             await callback.message.edit_text(TRANSLATIONS[lang]["wrong"], reply_markup=None)

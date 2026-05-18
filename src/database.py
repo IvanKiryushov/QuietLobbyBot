@@ -23,6 +23,13 @@ async def init_db():
             await db.execute("ALTER TABLE chat_settings ADD COLUMN title TEXT")
         except aiosqlite.OperationalError:
             pass  # Колонка уже создана
+
+        # Безопасная миграция: добавляем колонку welcome_message для кастомных приветствий новичков
+        try:
+            await db.execute("ALTER TABLE chat_settings ADD COLUMN welcome_message TEXT")
+        except aiosqlite.OperationalError:
+            pass  # Колонка уже создана
+
         await db.commit()
         logger.info("База данных инициализирована.")
 
@@ -71,7 +78,7 @@ async def get_all_active_chats() -> list:
 
 async def update_chat_setting(chat_id: int, key: str, value):
     """Обновляет конкретную настройку для чата."""
-    allowed_keys = ['language', 'captcha_strictness']
+    allowed_keys = ['language', 'captcha_strictness', 'welcome_message']
     if key not in allowed_keys:
         raise ValueError(f"Настройка {key} не разрешена.")
         
