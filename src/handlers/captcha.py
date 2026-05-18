@@ -4,7 +4,7 @@ import logging
 import time
 import html
 from aiogram import Router, F, Bot
-from aiogram.types import ChatPermissions, Message, CallbackQuery, InlineKeyboardMarkup, InlineKeyboardButton
+from aiogram.types import ChatPermissions, Message, CallbackQuery, InlineKeyboardMarkup, InlineKeyboardButton, ChatJoinRequest
 from aiogram.filters import Command
 from aiogram.exceptions import TelegramAPIError
 
@@ -144,6 +144,30 @@ async def handle_new_member(message: Message, bot: Bot):
         
         if await is_global_spammer(user_id):
             await kick_user_and_clean(bot, chat_id, user_id)
+            continue
+            
+        settings = await get_chat_settings(chat_id)
+        strictness = settings.get('captcha_strictness', 1) if settings else 1
+        
+        if strictness == 0:
+            # Уровень 0: Ручное одобрение. Пользователь уже одобрен админом.
+            # Капча не нужна, отправляем только приветствие, если оно есть.
+            welcome_msg = settings.get("welcome_message") if settings else None
+            if welcome_msg:
+                user_name_esc = html.escape(member.first_name)
+                user_mention = f'<a href="tg://user?id={user_id}">{user_name_esc}</a>'
+                formatted_welcome = welcome_msg.replace("{name}", user_name_esc).replace("{mention}", user_mention)
+                
+                welcome_text, welcome_markup = parse_welcome_message(formatted_welcome)
+                try:
+                    await bot.send_message(
+                        chat_id=chat_id,
+                        text=welcome_text,
+                        reply_markup=welcome_markup,
+                        parse_mode="HTML"
+                    )
+                except TelegramAPIError as e:
+                    logger.error(f"Не удалось отправить кастомное приветствие: {e}")
             continue
 
         try:
@@ -293,3 +317,96 @@ async def handle_captcha_click(callback: CallbackQuery, bot: Bot):
     except TelegramAPIError as e:
         logger.error(f"Ошибка API при клике по капче: {e}")
         await callback.answer("Произошла ошибка, попробуйте еще раз.", show_alert=True)
+
+# --- MANUAL APPROVAL HANDLERS (Level 0) ---
+
+@captcha_router.chat_join_request()
+async def handle_chat_join_request(request: ChatJoinRequest, bot: Bot):
+    chat_id = request.chat.id
+    user_id = request.from_user.id
+    
+    settings = await get_chat_settings(chat_id)
+    strictness = settings.get('captcha_strictness', 1) if settings else 1
+    
+    # Если строгость не 0, значит чат не в ручном режиме. Оставляем заявку висеть
+    # (или в будущем можем авто-одобрять и слать капчу)
+    if strictness != 0:
+        return
+        
+    user_name = html.escape(request.from_user.full_name)
+    user_username = f" (@{request.from_user.username})" if request.from_user.username else ""
+    chat_name = html.escape(request.chat.title or str(chat_id))
+    
+    text = (
+        f"🔔 <b>Новая заявка на вступление!</b>\n\n"
+        f"<b>Чат:</b> {chat_name}\n"
+        f"<b>Пользователь:</b> <a href='tg://user?id={user_id}'>{user_name}</a>{user_username}\n"
+        f"<b>ID:</b> <code>{user_id}</code>"
+    )
+    
+    markup = InlineKeyboardMarkup(inline_keyboard=[
+        [
+            InlineKeyboardButton(text="✅ Одобрить", callback_data=f"approve_join:{chat_id}:{user_id}"),
+            InlineKeyboardButton(text="❌ Отклонить", callback_data=f"decline_join:{chat_id}:{user_id}")
+        ]
+    ])
+    
+    try:
+        admins = await bot.get_chat_administrators(chat_id)
+        for admin in admins:
+            if not admin.user.is_bot:
+                try:
+                    await bot.send_message(
+                        chat_id=admin.user.id,
+                        text=text,
+                        reply_markup=markup,
+                        parse_mode="HTML"
+                    )
+                except TelegramAPIError:
+                    # Администратор не запускал бота в ЛС, игнорируем
+                    pass
+    except TelegramAPIError as e:
+        logger.error(f"Не удалось получить список администраторов чата {chat_id}: {e}")
+
+@captcha_router.callback_query(F.data.startswith("approve_join:"))
+async def approve_join_callback(callback: CallbackQuery, bot: Bot):
+    _, chat_id_str, user_id_str = callback.data.split(":")
+    chat_id = int(chat_id_str)
+    user_id = int(user_id_str)
+    
+    try:
+        await bot.approve_chat_join_request(chat_id=chat_id, user_id=user_id)
+        
+        # Обновляем сообщение у админа
+        await callback.message.edit_text(
+            text=f"{callback.message.html_text}\n\n✅ <b>Одобрено администратором</b> {html.escape(callback.from_user.full_name)}",
+            reply_markup=None,
+            parse_mode="HTML"
+        )
+        await callback.answer("Заявка одобрена!")
+        
+    except TelegramAPIError as e:
+        logger.error(f"Не удалось одобрить заявку: {e}")
+        await callback.answer("Ошибка! Возможно, пользователь уже принят или отозвал заявку.", show_alert=True)
+
+@captcha_router.callback_query(F.data.startswith("decline_join:"))
+async def decline_join_callback(callback: CallbackQuery, bot: Bot):
+    _, chat_id_str, user_id_str = callback.data.split(":")
+    chat_id = int(chat_id_str)
+    user_id = int(user_id_str)
+    
+    try:
+        await bot.decline_chat_join_request(chat_id=chat_id, user_id=user_id)
+        
+        # Обновляем сообщение у админа
+        await callback.message.edit_text(
+            text=f"{callback.message.html_text}\n\n❌ <b>Отклонено администратором</b> {html.escape(callback.from_user.full_name)}",
+            reply_markup=None,
+            parse_mode="HTML"
+        )
+        await callback.answer("Заявка отклонена!")
+        
+    except TelegramAPIError as e:
+        logger.error(f"Не удалось отклонить заявку: {e}")
+        await callback.answer("Ошибка! Возможно, заявка уже обработана.", show_alert=True)
+

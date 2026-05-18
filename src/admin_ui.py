@@ -34,7 +34,13 @@ def generate_settings_keyboard(chat_id: int, settings: dict) -> InlineKeyboardMa
     welcome = settings.get('welcome_message')
     
     lang_text = f"Язык: {'🇷🇺 RU' if lang == 'ru' else '🇻🇳 VI' if lang == 'vi' else '🇬🇧 EN'}"
-    strictness_text = f"Строгость: {strictness}"
+    strictness_texts = {
+        0: "Строгость: 0 - Ручное одобрение",
+        1: "Строгость: 1 - Слово + кнопка с эмоджи",
+        2: "Строгость: 2 - В разработке",
+        3: "Строгость: 3 - В разработке"
+    }
+    strictness_text = strictness_texts.get(strictness, f"Строгость: {strictness}")
     welcome_text = "👋 Приветствие: Настроено" if welcome else "👋 Приветствие: Выкл"
     
     buttons = [
@@ -123,8 +129,8 @@ async def change_strictness_callback(callback: CallbackQuery, bot: Bot):
         return
         
     strictness = int(current_strict)
-    # Переключение строгости (1 -> 2 -> 3 -> 1)
-    next_strict = strictness + 1 if strictness < 3 else 1
+    # Переключение строгости (0 -> 1 -> 2 -> 3 -> 0)
+    next_strict = strictness + 1 if strictness < 3 else 0
     
     await update_chat_setting(chat_id, 'captcha_strictness', next_strict)
     
