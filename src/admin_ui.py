@@ -65,7 +65,7 @@ async def handle_forwarded_message(message: Message, bot: Bot):
     if message.forward_from_chat.type in ["group", "supergroup"]:
         await open_settings_panel(message, bot, chat_id)
 
-@admin_router.message(Command(commands=["start"]), F.chat.type == "private")
+@admin_router.message(Command(commands=["start"]), F.chat.type == "private", F.text.startswith("/start set_"))
 async def handle_start_settings(message: Message, bot: Bot):
     """Обрабатывает DeepLink старт вида /start set_-100123..."""
     args = message.text.split()

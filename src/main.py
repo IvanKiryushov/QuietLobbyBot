@@ -58,7 +58,7 @@ async def main():
     # Запускаем пуллинг
     logger.info("Запуск бота-модератора (QuietLobbyBot)...")
     try:
-        await dp.start_polling(bot, allowed_updates=["chat_member", "message", "callback_query"])
+        await dp.start_polling(bot, allowed_updates=["chat_member", "my_chat_member", "message", "callback_query"])
     except Exception as e:
         logger.error(f"Ошибка при запуске бота: {e}")
     finally:
