@@ -17,6 +17,9 @@ captcha_router = Router()
 # Хранилище временных данных: (chat_id, user_id) -> message_id временного сообщения в группе
 group_prompts = {}
 
+# Хранилище одобренных заявок (для прохода без капчи при strictness=0): (chat_id, user_id) -> timestamp
+approved_join_requests = {}
+
 # Таймаут верификации в секундах (180 секунд = 3 минуты)
 VERIFICATION_TIMEOUT = 180
 
@@ -150,25 +153,35 @@ async def handle_new_member(message: Message, bot: Bot):
         strictness = settings.get('captcha_strictness', 1) if settings else 1
         
         if strictness == 0:
-            # Уровень 0: Ручное одобрение. Пользователь уже одобрен админом.
-            # Капча не нужна, отправляем только приветствие, если оно есть.
-            welcome_msg = settings.get("welcome_message") if settings else None
-            if welcome_msg:
-                user_name_esc = html.escape(member.first_name)
-                user_mention = f'<a href="tg://user?id={user_id}">{user_name_esc}</a>'
-                formatted_welcome = welcome_msg.replace("{name}", user_name_esc).replace("{mention}", user_mention)
+            # Уровень 0: Ручное одобрение.
+            # Проверяем, был ли пользователь одобрен через бота
+            is_approved = (chat_id, user_id) in approved_join_requests
+            
+            if is_approved:
+                # Пользователь одобрен админом в ЛС бота. Удаляем из временного списка и пропускаем без капчи.
+                approved_join_requests.pop((chat_id, user_id), None)
                 
-                welcome_text, welcome_markup = parse_welcome_message(formatted_welcome)
-                try:
-                    await bot.send_message(
-                        chat_id=chat_id,
-                        text=welcome_text,
-                        reply_markup=welcome_markup,
-                        parse_mode="HTML"
-                    )
-                except TelegramAPIError as e:
-                    logger.error(f"Не удалось отправить кастомное приветствие: {e}")
-            continue
+                welcome_msg = settings.get("welcome_message") if settings else None
+                if welcome_msg:
+                    user_name_esc = html.escape(member.first_name)
+                    user_mention = f'<a href="tg://user?id={user_id}">{user_name_esc}</a>'
+                    formatted_welcome = welcome_msg.replace("{name}", user_name_esc).replace("{mention}", user_mention)
+                    
+                    welcome_text, welcome_markup = parse_welcome_message(formatted_welcome)
+                    try:
+                        await bot.send_message(
+                            chat_id=chat_id,
+                            text=welcome_text,
+                            reply_markup=welcome_markup,
+                            parse_mode="HTML"
+                        )
+                    except TelegramAPIError as e:
+                        logger.error(f"Не удалось отправить кастомное приветствие: {e}")
+                continue
+            else:
+                # Пользователь зашел напрямую в обход ЛС бота!
+                # Не делаем continue — запускаем для него резервную капчу (Уровень 1)!
+                logger.warning(f"[ОБХОД ЗАЯВОК] Пользователь {user_id} зашел в обход ручного одобрения в чат {chat_id}. Выдаем капчу.")
 
         try:
             await bot.restrict_chat_member(chat_id=chat_id, user_id=user_id, permissions=get_permissions(is_muted=True))
@@ -376,6 +389,9 @@ async def approve_join_callback(callback: CallbackQuery, bot: Bot):
     
     try:
         await bot.approve_chat_join_request(chat_id=chat_id, user_id=user_id)
+        
+        # Добавляем в список одобренных в памяти
+        approved_join_requests[(chat_id, user_id)] = time.time()
         
         # Обновляем сообщение у админа
         await callback.message.edit_text(

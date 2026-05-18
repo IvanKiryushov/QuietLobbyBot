@@ -138,7 +138,13 @@ async def change_strictness_callback(callback: CallbackQuery, bot: Bot):
     markup = generate_settings_keyboard(chat_id, settings)
     
     await callback.message.edit_reply_markup(reply_markup=markup)
-    await callback.answer(f"Строгость изменена на {next_strict}")
+    if next_strict == 0:
+        await callback.answer(
+            "⚠️ Важно!\nЧтобы этот режим работал, обязательно включите «Заявки на вступление» в настройках вашей группы в Telegram!",
+            show_alert=True
+        )
+    else:
+        await callback.answer(f"Строгость изменена на {next_strict}")
 
 @admin_router.callback_query(F.data == "set_close")
 async def close_settings_callback(callback: CallbackQuery, state: FSMContext):
