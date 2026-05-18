@@ -149,21 +149,33 @@ async def handle_get_chats(message: Message, bot: Bot):
         await message.answer("У вас нет прав для просмотра чатов.")
         return
 
-    chats = await get_all_active_chats()
+    try:
+        chats = await get_all_active_chats()
+    except Exception as e:
+        await message.answer(f"⚠️ Ошибка при обращении к базе данных: <code>{e}</code>", parse_mode="HTML")
+        logger.error(f"Ошибка БД в handle_get_chats: {e}")
+        return
+
     if not chats:
         await message.answer("Бот пока не добавлен ни в один активный чат.")
         return
 
-    text = "<b>Список активных чатов, где добавлен бот:</b>\n\n"
-    for idx, chat_data in enumerate(chats, 1):
-        chat_id = chat_data["chat_id"]
-        lang = chat_data.get("language", "en")
-        try:
-            chat = await bot.get_chat(chat_id)
-            title = chat.title or "Без названия"
-        except TelegramAPIError:
-            title = "Чат недоступен (бот удален или заблокирован)"
-        
-        text += f"{idx}. <b>{title}</b>\n   ID: <code>{chat_id}</code> | Язык: <code>{lang}</code>\n\n"
+    try:
+        text = "<b>Список активных чатов, где добавлен бот:</b>\n\n"
+        import html
+        for idx, chat_data in enumerate(chats, 1):
+            chat_id = chat_data["chat_id"]
+            lang = chat_data.get("language", "en")
+            try:
+                chat = await bot.get_chat(chat_id)
+                title = chat.title or "Без названия"
+                title = html.escape(title)
+            except TelegramAPIError:
+                title = "Чат недоступен (бот удален или заблокирован)"
+            
+            text += f"{idx}. <b>{title}</b>\n   ID: <code>{chat_id}</code> | Язык: <code>{lang}</code>\n\n"
 
-    await message.answer(text, parse_mode="HTML")
+        await message.answer(text, parse_mode="HTML")
+    except Exception as e:
+        await message.answer(f"⚠️ Ошибка при обработке или отправке списка чатов: <code>{e}</code>", parse_mode="HTML")
+        logger.error(f"Ошибка при формировании /chats: {e}")
