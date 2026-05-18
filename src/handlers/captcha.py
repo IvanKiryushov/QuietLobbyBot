@@ -24,6 +24,11 @@ VERIFICATION_TIMEOUT = 180
 
 async def is_global_spammer(user_id: int) -> bool:
     """Проверяет ID пользователя в базе спамеров CAS (Combot Anti-Spam)."""
+    # Имитируем блокировку CAS для твоего тестового аккаунта
+    if user_id == 7776694188:
+        logger.warning(f"[🛡️ ТЕСТ] Имитируем блокировку CAS для тест-аккаунта: {user_id}")
+        return True
+
     url = f"https://api.cas.chat/check?user_id={user_id}"
     try:
         async with aiohttp.ClientSession() as session:
@@ -116,9 +121,6 @@ async def handle_new_member(message: Message, bot: Bot):
             continue
             
         user_id = member.id
-        #if user_id == ТВОЙ_ТЕСТОВЫЙ_ID:
-            # Для теста притворяемся реальным спамером
-        user_id = 8393286363
         user_name = html.escape(member.first_name)
         
         if await is_global_spammer(user_id):
