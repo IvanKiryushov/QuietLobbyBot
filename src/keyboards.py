@@ -26,7 +26,9 @@ TRANSLATIONS = {
         "time_limit_info": "У тебя есть <b>{timeout_min} мин.</b>\n",
         "btn_verify": "НАЖМИ, ЕСЛИ ТЫ НЕ БОТ",
         "btn_return": "Вернуться в чат",
-        "too_slow": "Время вышло! Ты не успел пройти проверку вовремя и был удален из чата."
+        "too_slow": "Время вышло! Ты не успел пройти проверку вовремя и был удален из чата.",
+        "admin_verification_info": "ℹ️ Ты являешься администратором этого чата. Ссылка предназначена для проверки новых участников.",
+        "not_your_verification": "Эта проверка предназначена для другого пользователя (или время верификации истекло)."
     },
     "en": {
         "greet": "Hello, {name}!\n\nYou are joining <b>{chat_name}</b>.\n\nTo prevent spam, please select the <b>{target_word}</b> from the buttons below:",
@@ -38,7 +40,9 @@ TRANSLATIONS = {
         "time_limit_info": "<b>ATTENTION:</b> You have exactly <b>{timeout_min} minutes</b>, or you will be automatically kicked from the group!\n\n",
         "btn_verify": "CLICK IF YOU ARE NOT A BOT",
         "btn_return": "Return to Chat",
-        "too_slow": "Time is up! You failed to verify in time and were removed from the group."
+        "too_slow": "Time is up! You failed to verify in time and were removed from the group.",
+        "admin_verification_info": "ℹ️ You are an administrator of this chat. This link is for new members verification.",
+        "not_your_verification": "This verification is for another user (or verification time has expired)."
     },
     "vi": {
         "greet": "Xin chào, {name}!\n\nBạn đang tham gia nhóm <b>{chat_name}</b>.\n\nĐể chống tin rác, vui lòng chọn <b>{target_word}</b> từ các nút bên dưới:",
@@ -50,7 +54,9 @@ TRANSLATIONS = {
         "time_limit_info": "<b>CHÚ Ý:</b> Bạn có đúng <b>{timeout_min} phút</b>, nếu không bạn sẽ tự động bị xóa khỏi nhóm!\n\n",
         "btn_verify": "BẤM NẾU BẠN KHÔNG PHẢI BOT",
         "btn_return": "Quay lại nhóm",
-        "too_slow": "Hết giờ! Bạn đã không xác minh kịp thời và đã bị xóa khỏi nhóm."
+        "too_slow": "Hết giờ! Bạn đã không xác minh kịp thời và đã bị xóa khỏi nhóm.",
+        "admin_verification_info": "ℹ️ Bạn là quản trị viên của cuộc trò chuyện này. Liên kết này dùng để xác minh thành viên mới.",
+        "not_your_verification": "Xác minh này dành cho người dùng khác (hoặc thời gian xác minh đã hết)."
     }
 }
 

@@ -247,7 +247,19 @@ async def handle_start_private(message: Message, bot: Bot):
         user_id = message.from_user.id
         
         if (chat_id, user_id) not in group_prompts:
-            await message.answer("Заявка на проверку не найдена или время верификации истекло.")
+            is_admin = False
+            try:
+                member = await bot.get_chat_member(chat_id=chat_id, user_id=user_id)
+                if member.status in ['administrator', 'creator']:
+                    is_admin = True
+            except TelegramAPIError:
+                pass
+
+            lang = await resolve_language(chat_id, message.from_user.language_code)
+            if is_admin:
+                await message.answer(TRANSLATIONS[lang]["admin_verification_info"])
+            else:
+                await message.answer(TRANSLATIONS[lang]["not_your_verification"])
             return
             
         lang = await resolve_language(chat_id, message.from_user.language_code)

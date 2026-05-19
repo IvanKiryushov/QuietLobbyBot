@@ -173,8 +173,28 @@ async def handle_get_chats(message: Message, bot: Bot):
                 title = html.escape(title)
             except TelegramAPIError:
                 title = f"{html.escape(title_cached)} (Чат недоступен)"
-            
-            text += f"{idx}. <b>{title}</b>\n   ID: <code>{chat_id}</code> | Язык: <code>{lang}</code>\n\n"
+
+            creator_info = "Неизвестно"
+            try:
+                admins = await bot.get_chat_administrators(chat_id)
+                for admin in admins:
+                    if admin.status == "creator":
+                        user = admin.user
+                        creator_name = user.first_name
+                        if user.last_name:
+                            creator_name += f" {user.last_name}"
+                        if user.username:
+                            creator_name += f" (@{user.username})"
+                        creator_info = f"{html.escape(creator_name)} (ID: <code>{user.id}</code>)"
+                        break
+            except TelegramAPIError:
+                pass
+
+            text += (
+                f"{idx}. <b>{title}</b>\n"
+                f"   ID: <code>{chat_id}</code> | Язык: <code>{lang}</code>\n"
+                f"   Создатель: {creator_info}\n\n"
+            )
 
         await message.answer(text, parse_mode="HTML")
     except Exception as e:
