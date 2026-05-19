@@ -249,7 +249,12 @@ async def handle_left_chat_member(message: Message):
 async def handle_start_private(message: Message, bot: Bot):
     args = message.text.split()
     if len(args) != 2 or not args[1].startswith("verify_"):
-        await message.answer("👋 Привет! Я QuietLobbyBot — бот-модератор.\nЯ помогаю защищать публичные группы от спамеров.")
+        await message.answer(
+            "👋 Привет! Я QuietLobbyBot — бот-модератор.\nЯ помогаю защищать публичные группы от спамеров.\n\n"
+            "🛠️ <b>Разработка ботов, доработка и автоматизация процессов:</b> @kiryvanya\n"
+            "<i>(Пишите по любым вопросам сотрудничества и реализации проектов!)</i>",
+            parse_mode="HTML"
+        )
         return
 
     try:
