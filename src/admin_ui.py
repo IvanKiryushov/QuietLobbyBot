@@ -56,11 +56,31 @@ def generate_settings_keyboard(chat_id: int, settings: dict) -> InlineKeyboardMa
     
     buttons = [
         [InlineKeyboardButton(text=lang_text, callback_data=f"set_lang:{chat_id}:{lang}")],
-        [InlineKeyboardButton(text=strictness_text, callback_data=f"set_strict:{chat_id}:{strictness}")],
+        [InlineKeyboardButton(text=strictness_text, callback_data=f"strict_menu:{chat_id}")],
         [InlineKeyboardButton(text=welcome_text, callback_data=f"set_welcome:{chat_id}")],
         [InlineKeyboardButton(text=timeout_text, callback_data=f"timeout_start:{chat_id}")],
         [InlineKeyboardButton(text="Закрыть", callback_data="set_close")]
     ]
+    return InlineKeyboardMarkup(inline_keyboard=buttons)
+
+def generate_strictness_keyboard(chat_id: int, pending_strictness: int) -> InlineKeyboardMarkup:
+    """Генерирует клавиатуру выбора строгости с кнопками Сохранить/Отменить."""
+    levels = [
+        (0, "0 - Ручное одобрение"),
+        (1, "1 - Слово + кнопка с эмоджи"),
+        (2, "2 - В разработке"),
+        (3, "3 - В разработке")
+    ]
+    
+    buttons = []
+    for val, name in levels:
+        mark = "🔘 " if val == pending_strictness else "⚪ "
+        buttons.append([InlineKeyboardButton(text=f"{mark}{name}", callback_data=f"strict_sel:{chat_id}:{val}")])
+        
+    buttons.append([
+        InlineKeyboardButton(text="✅ Сохранить", callback_data=f"strict_save:{chat_id}:{pending_strictness}"),
+        InlineKeyboardButton(text="❌ Отменить", callback_data=f"strict_cancel:{chat_id}")
+    ])
     return InlineKeyboardMarkup(inline_keyboard=buttons)
 
 async def open_settings_panel(message: Message, bot: Bot, chat_id: int):
@@ -131,32 +151,109 @@ async def change_language_callback(callback: CallbackQuery, bot: Bot):
     await callback.message.edit_reply_markup(reply_markup=markup)
     await callback.answer(f"Язык изменен на {next_lang.upper()}")
 
-@admin_router.callback_query(F.data.startswith("set_strict:"))
-async def change_strictness_callback(callback: CallbackQuery, bot: Bot):
-    _, chat_id_str, current_strict = callback.data.split(":")
+@admin_router.callback_query(F.data.startswith("strict_menu:"))
+async def strict_menu_callback(callback: CallbackQuery, bot: Bot):
+    _, chat_id_str = callback.data.split(":")
     chat_id = int(chat_id_str)
     
     if not await is_chat_admin(bot, chat_id, callback.from_user.id):
         await callback.answer("У вас нет прав!", show_alert=True)
         return
         
-    strictness = int(current_strict)
-    # Переключение строгости (0 -> 1 -> 2 -> 3 -> 0)
-    next_strict = strictness + 1 if strictness < 3 else 0
+    settings = await get_chat_settings(chat_id)
+    current_strict = settings.get('captcha_strictness', 1) if settings else 1
     
-    await update_chat_setting(chat_id, 'captcha_strictness', next_strict)
+    markup = generate_strictness_keyboard(chat_id, current_strict)
     
+    await callback.message.edit_text(
+        "🛡️ <b>Настройка строгости капчи</b>\n\n"
+        "Выберите уровень проверки для новых участников:\n\n"
+        "• <b>Уровень 0</b> — Ручное одобрение заявок админом (для закрытых чатов).\n"
+        "• <b>Уровень 1</b> — Автоматическая кнопочная капча (эмодзи) в ЛС (для открытых чатов).\n"
+        "• <b>Уровни 2/3</b> — В разработке.\n\n"
+        "Выберите нужный вариант, после чего нажмите <b>Сохранить</b>.",
+        reply_markup=markup,
+        parse_mode="HTML"
+    )
+    await callback.answer()
+
+@admin_router.callback_query(F.data.startswith("strict_sel:"))
+async def strict_select_callback(callback: CallbackQuery, bot: Bot):
+    _, chat_id_str, selected_strict = callback.data.split(":")
+    chat_id = int(chat_id_str)
+    selected_strict = int(selected_strict)
+    
+    if not await is_chat_admin(bot, chat_id, callback.from_user.id):
+        await callback.answer("У вас нет прав!", show_alert=True)
+        return
+        
+    markup = generate_strictness_keyboard(chat_id, selected_strict)
+    
+    try:
+        await callback.message.edit_reply_markup(reply_markup=markup)
+    except TelegramAPIError:
+        pass
+    await callback.answer()
+
+@admin_router.callback_query(F.data.startswith("strict_save:"))
+async def strict_save_callback(callback: CallbackQuery, bot: Bot):
+    _, chat_id_str, target_strict = callback.data.split(":")
+    chat_id = int(chat_id_str)
+    target_strict = int(target_strict)
+    
+    if not await is_chat_admin(bot, chat_id, callback.from_user.id):
+        await callback.answer("У вас нет прав!", show_alert=True)
+        return
+        
+    await update_chat_setting(chat_id, 'captcha_strictness', target_strict)
+    
+    try:
+        chat = await bot.get_chat(chat_id)
+        chat_name = chat.title or str(chat_id)
+    except TelegramAPIError:
+        chat_name = str(chat_id)
+        
     settings = await get_chat_settings(chat_id)
     markup = generate_settings_keyboard(chat_id, settings)
     
-    await callback.message.edit_reply_markup(reply_markup=markup)
-    if next_strict == 0:
+    await callback.message.edit_text(
+        f"⚙️ <b>Настройки для чата:</b> {chat_name}\n\nВыберите параметр для изменения:",
+        reply_markup=markup,
+        parse_mode="HTML"
+    )
+    
+    if target_strict == 0:
         await callback.answer(
-            "⚠️ Важно!\nЧтобы этот режим работал, обязательно включите «Заявки на вступление» в настройках вашей группы в Telegram!",
+            "⚠️ Важно!\nЧтобы этот режим работал, обязательно включите «Заявки на вступление» (Join Requests) в настройках вашей группы в Telegram!",
             show_alert=True
         )
     else:
-        await callback.answer(f"Строгость изменена на {next_strict}")
+        await callback.answer(f"Сохранено: Строгость {target_strict}")
+
+@admin_router.callback_query(F.data.startswith("strict_cancel:"))
+async def strict_cancel_callback(callback: CallbackQuery, bot: Bot):
+    _, chat_id_str = callback.data.split(":")
+    chat_id = int(chat_id_str)
+    
+    if not await is_chat_admin(bot, chat_id, callback.from_user.id):
+        await callback.answer("У вас нет прав!", show_alert=True)
+        return
+        
+    try:
+        chat = await bot.get_chat(chat_id)
+        chat_name = chat.title or str(chat_id)
+    except TelegramAPIError:
+        chat_name = str(chat_id)
+        
+    settings = await get_chat_settings(chat_id)
+    markup = generate_settings_keyboard(chat_id, settings)
+    
+    await callback.message.edit_text(
+        f"⚙️ <b>Настройки для чата:</b> {chat_name}\n\nВыберите параметр для изменения:",
+        reply_markup=markup,
+        parse_mode="HTML"
+    )
+    await callback.answer("Изменения отменены.")
 
 async def _restore_settings_message(callback: CallbackQuery, bot: Bot, chat_id: int, state: FSMContext):
     """Возвращает сообщение к главному экрану настроек (после отмены / сохранения)."""

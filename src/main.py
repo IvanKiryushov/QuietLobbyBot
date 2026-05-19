@@ -40,6 +40,28 @@ for logger_name in ["aiogram", "aiogram.event", "aiogram.dispatcher"]:
     logging.getLogger(logger_name).setLevel(logging.WARNING)
 logger = logging.getLogger(__name__)
 
+async def set_bot_descriptions(bot: Bot):
+    """Устанавливает лаконичное описание бота для разных языков."""
+    descriptions = {
+        "ru": "👋 Бот-модератор QuietLobby. Чтобы запустить бота или пройти верификацию, нажмите «Start» внизу экрана.",
+        "en": "👋 QuietLobby moderation bot. To start the bot or pass verification, click «Start» at the bottom.",
+        "vi": "👋 Bot kiểm duyệt QuietLobby. Để khởi động bot hoặc xác minh, hãy bấm «Start» ở bên dưới."
+    }
+    
+    # Глобальный дефолт (английский)
+    try:
+        await bot.set_my_description(description=descriptions["en"])
+        logger.info("Установлено глобальное описание бота по умолчанию.")
+    except Exception as e:
+        logger.error(f"Не удалось установить глобальное описание бота: {e}")
+
+    for lang, desc in descriptions.items():
+        try:
+            await bot.set_my_description(description=desc, language_code=lang)
+            logger.info(f"Установлено описание бота на языке: {lang.upper()}")
+        except Exception as e:
+            logger.error(f"Не удалось установить описание бота на языке {lang.upper()}: {e}")
+
 async def main():
     # Получаем токен из .env
     bot_token = os.getenv("BOT_TOKEN")
@@ -53,6 +75,9 @@ async def main():
     # Инициализация бота и диспетчера
     bot = Bot(token=bot_token)
     dp = Dispatcher()
+
+    # Установка приветственных описаний бота
+    await set_bot_descriptions(bot)
 
     # Подключаем роутер с хендлерами
     dp.include_router(admin_router)
