@@ -45,6 +45,12 @@ async def sync_admins_for_chat(chat_id: int, bot: Bot):
         logger.info(f"Синхронизировано {len(admin_ids)} администраторов для чата {chat_id}")
     except TelegramAPIError as e:
         logger.error(f"Не удалось синхронизировать администраторов для чата {chat_id}: {e}")
+        # Если чат не найден или бот кикнут/заблокирован, помечаем чат как неактивный
+        err_msg = str(e).lower()
+        if any(keyword in err_msg for keyword in ["chat not found", "kicked", "forbidden", "not member", "deactivated"]):
+            logger.info(f"Деактивируем чат {chat_id} в БД из-за ошибки Telegram API: {e}")
+            from database import deactivate_chat
+            await deactivate_chat(chat_id)
 
 def generate_settings_keyboard(chat_id: int, settings: dict, show_back: bool = False) -> InlineKeyboardMarkup:
     """Генерирует клавиатуру настроек для конкретного чата."""
@@ -173,18 +179,6 @@ async def show_admin_chats(event: Message | CallbackQuery, bot: Bot):
         else:
             await event.answer(error_text)
         return
-
-    # Добавляем суперадмина бота: он должен видеть все чаты, даже если не записан как админ в chat_admins
-    admin_id_str = os.getenv("ADMIN_ID")
-    if admin_id_str:
-        try:
-            admin_id = int(admin_id_str)
-            if user_id == admin_id:
-                # Если суперадмин, получаем вообще все активные чаты
-                from database import get_all_active_chats
-                chats = await get_all_active_chats()
-        except ValueError:
-            pass
 
     if not chats:
         text = "💬 <b>У вас нет чатов для настройки.</b>\n\nВы должны быть администратором в чатах, куда добавлен этот бот."
