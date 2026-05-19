@@ -62,10 +62,60 @@ async def set_bot_descriptions(bot: Bot):
         except Exception as e:
             logger.error(f"Не удалось установить описание бота на языке {lang.upper()}: {e}")
 
+async def set_bot_commands(bot: Bot):
+    """Устанавливает подсказки команд для разных областей (scopes)."""
+    from aiogram.types import BotCommand, BotCommandScopeAllPrivateChats, BotCommandScopeAllGroupChats, BotCommandScopeChat
+    
+    # 1. Команды в личных сообщениях (для всех пользователей)
+    commands_private = [
+        BotCommand(command="start", description="Начать работу / Пройти верификацию"),
+        BotCommand(command="settings", description="Выбрать группу и открыть настройки")
+    ]
+    try:
+        await bot.set_my_commands(
+            commands=commands_private,
+            scope=BotCommandScopeAllPrivateChats()
+        )
+        logger.info("Установлены подсказки команд для ЛС.")
+    except Exception as e:
+        logger.error(f"Не удалось установить команды для ЛС: {e}")
+
+    # 2. Команды в личных сообщениях для суперадмина
+    admin_id_str = os.getenv("ADMIN_ID")
+    if admin_id_str:
+        try:
+            admin_id = int(admin_id_str)
+            commands_admin = commands_private + [
+                BotCommand(command="chats", description="Список чатов, где добавлен бот"),
+                BotCommand(command="logs", description="Просмотр последних логов бота")
+            ]
+            await bot.set_my_commands(
+                commands=commands_admin,
+                scope=BotCommandScopeChat(chat_id=admin_id)
+            )
+            logger.info("Установлены подсказки команд для суперадмина.")
+        except Exception as e:
+            logger.error(f"Не удалось установить команды для суперадмина: {e}")
+
+    # 3. Команды в группах (для вызова настройки)
+    commands_groups = [
+        BotCommand(command="settings", description="Получить ссылку на настройки в ЛС")
+    ]
+    try:
+        await bot.set_my_commands(
+            commands=commands_groups,
+            scope=BotCommandScopeAllGroupChats()
+        )
+        logger.info("Установлены подсказки команд для групп.")
+    except Exception as e:
+        logger.error(f"Не удалось установить команды для групп: {e}")
+
+
 async def sync_all_chats_admins(bot: Bot):
     """Фоновая синхронизация администраторов для всех активных чатов в БД при старте."""
-    from database import get_all_active_chats
+    from database import get_all_active_chats, migrate_chat_id
     from admin_ui import sync_admins_for_chat
+    from aiogram.exceptions import TelegramAPIError
     try:
         chats = await get_all_active_chats()
         if not chats:
@@ -75,6 +125,17 @@ async def sync_all_chats_admins(bot: Bot):
         logger.info(f"Запуск фоновой синхронизации админов для {len(chats)} чатов...")
         for chat_data in chats:
             chat_id = chat_data["chat_id"]
+            
+            # Проверяем реальный ID чата в Telegram, чтобы выявить скрытую миграцию
+            try:
+                chat = await bot.get_chat(chat_id)
+                if chat.id != chat_id:
+                    logger.info(f"Выявлена скрытая миграция чата при старте: {chat_id} -> {chat.id}")
+                    await migrate_chat_id(chat_id, chat.id)
+                    chat_id = chat.id
+            except TelegramAPIError:
+                pass
+                
             # Запускаем синхронизацию для каждого чата последовательно с небольшой задержкой, чтобы не превысить лимиты API
             await sync_admins_for_chat(chat_id, bot)
             await asyncio.sleep(0.5)
@@ -98,6 +159,9 @@ async def main():
 
     # Установка приветственных описаний бота
     await set_bot_descriptions(bot)
+
+    # Установка подсказок команд для бота
+    await set_bot_commands(bot)
 
     # Подключаем роутер с хендлерами
     dp.include_router(admin_router)

@@ -169,6 +169,11 @@ async def handle_get_chats(message: Message, bot: Bot):
             title_cached = chat_data.get("title") or "Без названия"
             try:
                 chat = await bot.get_chat(chat_id)
+                if chat.id != chat_id:
+                    from database import migrate_chat_id
+                    logger.info(f"Обнаружена скрытая миграция чата при выводе /chats: {chat_id} -> {chat.id}")
+                    await migrate_chat_id(chat_id, chat.id)
+                    continue  # Пропускаем старый дубликат чата в текущем списке
                 title = chat.title or title_cached
                 title = html.escape(title)
             except TelegramAPIError:
