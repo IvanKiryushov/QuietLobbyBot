@@ -37,8 +37,29 @@ async def init_db():
         except aiosqlite.OperationalError:
             pass  # Колонка уже создана
 
+        # Таблица администраторов групп для stateless-доступа в ЛС
+        await db.execute('''
+            CREATE TABLE IF NOT EXISTS chat_admins (
+                chat_id INTEGER,
+                user_id INTEGER,
+                PRIMARY KEY (chat_id, user_id)
+            )
+        ''')
+
+        # Таблица участников групп для сбора фидбека при выходе
+        await db.execute('''
+            CREATE TABLE IF NOT EXISTS group_members (
+                chat_id INTEGER,
+                user_id INTEGER,
+                joined_at TIMESTAMP,
+                left_at TIMESTAMP,
+                status TEXT,
+                PRIMARY KEY (chat_id, user_id)
+            )
+        ''')
+
         await db.commit()
-        logger.info("База данных инициализирована.")
+        logger.info("База данных инициализирована (все таблицы созданы).")
 
 async def register_chat(chat_id: int, title: str = None):
     """Регистрирует новый чат в БД при добавлении бота, или активирует существующий с сохранением названия."""
@@ -138,4 +159,52 @@ async def migrate_chat_id(old_chat_id: int, new_chat_id: int):
             ''', (new_chat_id, old_chat_id))
             logger.info(f"ID чата {old_chat_id} изменен на новый супергрупповой ID {new_chat_id}")
             
+        # Мигрируем админов
+        await db.execute('UPDATE chat_admins SET chat_id = ? WHERE chat_id = ?', (new_chat_id, old_chat_id))
+        
+        # Мигрируем участников
+        await db.execute('UPDATE group_members SET chat_id = ? WHERE chat_id = ?', (new_chat_id, old_chat_id))
+        
+        await db.commit()
+
+async def set_chat_admins(chat_id: int, admin_ids: list[int]):
+    """Очищает список админов чата и записывает актуальный."""
+    async with aiosqlite.connect(DB_PATH) as db:
+        await db.execute('DELETE FROM chat_admins WHERE chat_id = ?', (chat_id,))
+        for user_id in admin_ids:
+            await db.execute('INSERT OR REPLACE INTO chat_admins (chat_id, user_id) VALUES (?, ?)', (chat_id, user_id))
+        await db.commit()
+
+async def get_admin_chats(user_id: int) -> list[dict]:
+    """Возвращает список активных чатов, где данный user_id является администратором."""
+    async with aiosqlite.connect(DB_PATH) as db:
+        db.row_factory = aiosqlite.Row
+        async with db.execute('''
+            SELECT cs.chat_id, cs.title, cs.language, cs.captcha_strictness, cs.verification_timeout
+            FROM chat_settings cs
+            JOIN chat_admins ca ON cs.chat_id = ca.chat_id
+            WHERE ca.user_id = ? AND cs.is_active = 1
+        ''', (user_id,)) as cursor:
+            rows = await cursor.fetchall()
+            return [dict(row) for row in rows]
+
+async def record_member_join(chat_id: int, user_id: int):
+    """Фиксирует вход пользователя в группу."""
+    async with aiosqlite.connect(DB_PATH) as db:
+        await db.execute('''
+            INSERT INTO group_members (chat_id, user_id, joined_at, left_at, status)
+            VALUES (?, ?, ?, NULL, 'member')
+            ON CONFLICT(chat_id, user_id) DO UPDATE SET joined_at = ?, left_at = NULL, status = 'member'
+        ''', (chat_id, user_id, datetime.now(), datetime.now()))
+        await db.commit()
+
+async def record_member_leave(chat_id: int, user_id: int, is_kick: bool = False):
+    """Фиксирует выход или кик пользователя из группы."""
+    status = 'kicked' if is_kick else 'left'
+    async with aiosqlite.connect(DB_PATH) as db:
+        await db.execute('''
+            UPDATE group_members
+            SET left_at = ?, status = ?
+            WHERE chat_id = ? AND user_id = ?
+        ''', (datetime.now(), status, chat_id, user_id))
         await db.commit()

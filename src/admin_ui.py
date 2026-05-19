@@ -1,3 +1,4 @@
+import os
 import logging
 from aiogram import Router, F, Bot
 from aiogram.types import Message, CallbackQuery, InlineKeyboardMarkup, InlineKeyboardButton
@@ -34,7 +35,18 @@ async def is_chat_admin(bot: Bot, chat_id: int, user_id: int) -> bool:
         logger.error(f"Ошибка при проверке прав пользователя {user_id} в чате {chat_id}: {e}")
         return False
 
-def generate_settings_keyboard(chat_id: int, settings: dict) -> InlineKeyboardMarkup:
+async def sync_admins_for_chat(chat_id: int, bot: Bot):
+    """Синхронизирует список администраторов группы с базой данных."""
+    try:
+        admins = await bot.get_chat_administrators(chat_id)
+        admin_ids = [admin.user.id for admin in admins if not admin.user.is_bot]
+        from database import set_chat_admins
+        await set_chat_admins(chat_id, admin_ids)
+        logger.info(f"Синхронизировано {len(admin_ids)} администраторов для чата {chat_id}")
+    except TelegramAPIError as e:
+        logger.error(f"Не удалось синхронизировать администраторов для чата {chat_id}: {e}")
+
+def generate_settings_keyboard(chat_id: int, settings: dict, show_back: bool = False) -> InlineKeyboardMarkup:
     """Генерирует клавиатуру настроек для конкретного чата."""
     lang = settings.get('language', 'en')
     strictness = settings.get('captcha_strictness', 1)
@@ -54,12 +66,14 @@ def generate_settings_keyboard(chat_id: int, settings: dict) -> InlineKeyboardMa
     welcome_text = "👋 Приветствие: Настроено" if welcome else "👋 Приветствие: Выкл"
     timeout_text = "⏳ Таймаут: Без лимита" if timeout_mins == 0 else f"⏳ Таймаут: {timeout_mins} мин"
     
+    back_button = InlineKeyboardButton(text="⬅️ К списку групп", callback_data="adm_back") if show_back else InlineKeyboardButton(text="Закрыть", callback_data="set_close")
+    
     buttons = [
         [InlineKeyboardButton(text=lang_text, callback_data=f"set_lang:{chat_id}:{lang}")],
         [InlineKeyboardButton(text=strictness_text, callback_data=f"strict_menu:{chat_id}")],
         [InlineKeyboardButton(text=welcome_text, callback_data=f"set_welcome:{chat_id}")],
         [InlineKeyboardButton(text=timeout_text, callback_data=f"timeout_start:{chat_id}")],
-        [InlineKeyboardButton(text="Закрыть", callback_data="set_close")]
+        [back_button]
     ]
     return InlineKeyboardMarkup(inline_keyboard=buttons)
 
@@ -83,11 +97,17 @@ def generate_strictness_keyboard(chat_id: int, pending_strictness: int) -> Inlin
     ])
     return InlineKeyboardMarkup(inline_keyboard=buttons)
 
-async def open_settings_panel(message: Message, bot: Bot, chat_id: int):
-    """Открывает панель настроек чата, если есть права."""
-    user_id = message.from_user.id
+async def open_settings_panel(event: Message | CallbackQuery, bot: Bot, chat_id: int, show_back: bool = False):
+    """Открывает панель настроек чата, если есть права (отправляя новое или редактируя старое сообщение)."""
+    user_id = event.from_user.id
+    is_callback = isinstance(event, CallbackQuery)
+    
     if not await is_chat_admin(bot, chat_id, user_id):
-        await message.answer("У вас нет прав администратора в этом чате или бот не добавлен в этот чат.")
+        error_msg = "У вас нет прав администратора в этом чате или бот не добавлен в этот чат."
+        if is_callback:
+            await event.answer(error_msg, show_alert=True)
+        else:
+            await event.answer(error_msg)
         return
         
     try:
@@ -98,13 +118,21 @@ async def open_settings_panel(message: Message, bot: Bot, chat_id: int):
         
     settings = await get_chat_settings(chat_id)
     if not settings:
-        await message.answer(f"Чат <b>{chat_name}</b> еще не зарегистрирован в базе бота.", parse_mode="HTML")
+        error_msg = f"Чат <b>{chat_name}</b> еще не зарегистрирован в базе бота."
+        if is_callback:
+            await event.answer("Чат не зарегистрирован в БД.", show_alert=True)
+        else:
+            await event.answer(error_msg, parse_mode="HTML")
         return
         
     text = f"⚙️ <b>Настройки для чата:</b> {chat_name}\n\nВыберите параметр для изменения:"
-    markup = generate_settings_keyboard(chat_id, settings)
+    markup = generate_settings_keyboard(chat_id, settings, show_back=show_back)
     
-    await message.answer(text, reply_markup=markup, parse_mode="HTML")
+    if is_callback:
+        await event.message.edit_text(text, reply_markup=markup, parse_mode="HTML")
+        await event.answer()
+    else:
+        await event.answer(text, reply_markup=markup, parse_mode="HTML")
 
 @admin_router.message(F.chat.type == "private", F.forward_from_chat)
 async def handle_forwarded_message(message: Message, bot: Bot):
@@ -129,6 +157,77 @@ async def handle_start_settings(message: Message, bot: Bot):
             await open_settings_panel(message, bot, chat_id)
         except ValueError:
             await message.answer("Неверный формат ссылки настроек.")
+
+async def show_admin_chats(event: Message | CallbackQuery, bot: Bot):
+    """Отображает список групп в ЛС, где пользователь является администратором."""
+    user_id = event.from_user.id
+    is_callback = isinstance(event, CallbackQuery)
+    
+    from database import get_admin_chats
+    try:
+        chats = await get_admin_chats(user_id)
+    except Exception as e:
+        error_text = f"⚠️ Ошибка базы данных: {e}"
+        if is_callback:
+            await event.answer(error_text, show_alert=True)
+        else:
+            await event.answer(error_text)
+        return
+
+    # Добавляем суперадмина бота: он должен видеть все чаты, даже если не записан как админ в chat_admins
+    admin_id_str = os.getenv("ADMIN_ID")
+    if admin_id_str:
+        try:
+            admin_id = int(admin_id_str)
+            if user_id == admin_id:
+                # Если суперадмин, получаем вообще все активные чаты
+                from database import get_all_active_chats
+                chats = await get_all_active_chats()
+        except ValueError:
+            pass
+
+    if not chats:
+        text = "💬 <b>У вас нет чатов для настройки.</b>\n\nВы должны быть администратором в чатах, куда добавлен этот бот."
+        if is_callback:
+            await event.message.edit_text(text, parse_mode="HTML")
+            await event.answer()
+        else:
+            await event.answer(text, parse_mode="HTML")
+        return
+
+    buttons = []
+    for chat_data in chats:
+        chat_id = chat_data["chat_id"]
+        title = chat_data.get("title") or f"Чат {chat_id}"
+        buttons.append([InlineKeyboardButton(text=f"⚙️ {title}", callback_data=f"adm_set:{chat_id}")])
+    
+    # Кнопка закрытия меню
+    buttons.append([InlineKeyboardButton(text="❌ Закрыть меню", callback_data="set_close")])
+    markup = InlineKeyboardMarkup(inline_keyboard=buttons)
+    
+    text = "⚙️ <b>Панель управления QuietLobbyBot</b>\n\nВыберите группу для изменения настроек:"
+    if is_callback:
+        await event.message.edit_text(text, reply_markup=markup, parse_mode="HTML")
+        await event.answer()
+    else:
+        await event.answer(text, reply_markup=markup, parse_mode="HTML")
+
+@admin_router.message(Command(commands=["settings"]), F.chat.type == "private")
+async def handle_settings_private(message: Message, bot: Bot):
+    """Показывает список администрируемых чатов в ЛС по команде /settings."""
+    await show_admin_chats(message, bot)
+
+@admin_router.callback_query(F.data.startswith("adm_set:"))
+async def handle_admin_set_callback(callback: CallbackQuery, bot: Bot):
+    """Открывает настройки конкретного чата из списка в ЛС."""
+    chat_id = int(callback.data.split(":")[1])
+    # Передаем show_back=True, чтобы кнопка «⬅️ К списку групп» была видна
+    await open_settings_panel(callback, bot, chat_id, show_back=True)
+
+@admin_router.callback_query(F.data == "adm_back")
+async def handle_admin_back_callback(callback: CallbackQuery, bot: Bot):
+    """Возвращает к списку чатов."""
+    await show_admin_chats(callback, bot)
 
 @admin_router.callback_query(F.data.startswith("set_lang:"))
 async def change_language_callback(callback: CallbackQuery, bot: Bot):

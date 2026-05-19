@@ -62,6 +62,26 @@ async def set_bot_descriptions(bot: Bot):
         except Exception as e:
             logger.error(f"Не удалось установить описание бота на языке {lang.upper()}: {e}")
 
+async def sync_all_chats_admins(bot: Bot):
+    """Фоновая синхронизация администраторов для всех активных чатов в БД при старте."""
+    from database import get_all_active_chats
+    from admin_ui import sync_admins_for_chat
+    try:
+        chats = await get_all_active_chats()
+        if not chats:
+            logger.info("Нет активных чатов в БД для синхронизации администраторов.")
+            return
+            
+        logger.info(f"Запуск фоновой синхронизации админов для {len(chats)} чатов...")
+        for chat_data in chats:
+            chat_id = chat_data["chat_id"]
+            # Запускаем синхронизацию для каждого чата последовательно с небольшой задержкой, чтобы не превысить лимиты API
+            await sync_admins_for_chat(chat_id, bot)
+            await asyncio.sleep(0.5)
+        logger.info("Фоновая синхронизация администраторов завершена.")
+    except Exception as e:
+        logger.error(f"Ошибка при фоновой синхронизации администраторов: {e}")
+
 async def main():
     # Получаем токен из .env
     bot_token = os.getenv("BOT_TOKEN")
@@ -82,6 +102,9 @@ async def main():
     # Подключаем роутер с хендлерами
     dp.include_router(admin_router)
     dp.include_router(router)
+
+    # Фоновый запуск синхронизации админов для всех групп
+    asyncio.create_task(sync_all_chats_admins(bot))
 
     # Запускаем пуллинг
     logger.info("Запуск бота-модератора (QuietLobbyBot)...")
