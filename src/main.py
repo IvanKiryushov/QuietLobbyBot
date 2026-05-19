@@ -43,9 +43,9 @@ logger = logging.getLogger(__name__)
 async def set_bot_descriptions(bot: Bot):
     """Устанавливает лаконичное описание бота для разных языков."""
     descriptions = {
-        "ru": "👋 Бот-модератор QuietLobby. Чтобы запустить бота или пройти верификацию, нажмите «Start» внизу экрана.\n\n🛠️ Разработка ботов, доработка и автоматизация процессов: @kiryvanya",
-        "en": "👋 QuietLobby moderation bot. To start the bot or pass verification, click «Start» at the bottom.\n\n🛠️ Custom bots, development & process automation: @kiryvanya",
-        "vi": "👋 Bot kiểm duyệt QuietLobby. Để khởi động bot hoặc xác minh, hãy bấm «Start» ở bên dưới.\n\n🛠️ Thiết kế bot, tự động hóa & liên hệ: @kiryvanya"
+        "ru": "👋 Бот-модератор QuietLobby. Чтобы запустить бота или пройти верификацию, нажмите «Start» внизу экрана.",
+        "en": "👋 QuietLobby moderation bot. To start the bot or pass verification, click «Start» at the bottom.",
+        "vi": "👋 Bot kiểm duyệt QuietLobby. Để khởi động bot hoặc xác minh, hãy bấm «Start» ở bên dưới."
     }
     
     # Глобальный дефолт (английский)

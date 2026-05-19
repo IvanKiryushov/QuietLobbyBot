@@ -251,8 +251,7 @@ async def handle_start_private(message: Message, bot: Bot):
     if len(args) != 2 or not args[1].startswith("verify_"):
         await message.answer(
             "👋 Привет! Я QuietLobbyBot — бот-модератор.\nЯ помогаю защищать публичные группы от спамеров.\n\n"
-            "🛠️ <b>Разработка ботов, доработка и автоматизация процессов:</b> @kiryvanya\n"
-            "<i>(Пишите по любым вопросам сотрудничества и реализации проектов!)</i>",
+            "⚙️ <b>Разработка и автоматизация ботов:</b> @bimivan",
             parse_mode="HTML"
         )
         return
