@@ -56,6 +56,13 @@ async def kick_user_and_clean(bot: Bot, chat_id: int, user_id: int):
         except TelegramAPIError:
             pass
 
+def get_user_language(language_code: str | None) -> str:
+    """Определяет язык пользователя по его Telegram-клиенту для ЛС."""
+    code = (language_code or "en").lower()
+    if code.startswith("ru"): return "ru"
+    if code.startswith("vi"): return "vi"
+    return "en"
+
 async def resolve_language(chat_id: int, fallback_lang_code: str) -> str:
     """Определяет язык чата из БД или fallback пользователя."""
     settings = await get_chat_settings(chat_id)
@@ -194,7 +201,11 @@ async def handle_new_member(message: Message, bot: Bot):
             logger.error(f"Не удалось наложить MUTE на {user_id}: {e}")
             continue
 
-        lang = await resolve_language(chat_id, member.language_code)
+        # Для сообщений в общей группе используем строго язык настроек чата из БД
+        chat_lang = settings.get('language', 'en') if settings else 'en'
+        if chat_lang not in ['ru', 'en', 'vi']:
+            chat_lang = 'en'
+        lang = chat_lang
         
         bot_info = await bot.get_me()
         clean_chat_id = str(chat_id).replace("-", "m")
@@ -255,14 +266,14 @@ async def handle_start_private(message: Message, bot: Bot):
             except TelegramAPIError:
                 pass
 
-            lang = await resolve_language(chat_id, message.from_user.language_code)
+            lang = get_user_language(message.from_user.language_code)
             if is_admin:
                 await message.answer(TRANSLATIONS[lang]["admin_verification_info"])
             else:
                 await message.answer(TRANSLATIONS[lang]["not_your_verification"])
             return
             
-        lang = await resolve_language(chat_id, message.from_user.language_code)
+        lang = get_user_language(message.from_user.language_code)
             
         try:
             chat = await bot.get_chat(chat_id)
@@ -297,12 +308,12 @@ async def handle_captcha_click(callback: CallbackQuery, bot: Bot):
     sent_timestamp = int(parts[4])
     
     if callback.from_user.id != user_id:
-        lang = await resolve_language(chat_id, callback.from_user.language_code)
+        lang = get_user_language(callback.from_user.language_code)
         await callback.answer(TRANSLATIONS[lang]["not_your_button"], show_alert=True)
         return
         
     reaction_time = time.time() - sent_timestamp
-    lang = await resolve_language(chat_id, callback.from_user.language_code)
+    lang = get_user_language(callback.from_user.language_code)
         
     try:
         if reaction_time < 1.5:
