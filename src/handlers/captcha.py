@@ -341,7 +341,7 @@ async def handle_captcha_click(callback: CallbackQuery, bot: Bot):
                 [InlineKeyboardButton(text=TRANSLATIONS[lang]["btn_return"], url=group_url, style="primary")]
             ])
             
-            await callback.message.edit_text(TRANSLATIONS[lang]["success"], reply_markup=markup_return)
+            await callback.message.edit_text(TRANSLATIONS[lang]["success"], reply_markup=markup_return, parse_mode="HTML")
             await callback.answer("Успешно!")
             
             # Отправка кастомного приветствия, если оно настроено в БД
