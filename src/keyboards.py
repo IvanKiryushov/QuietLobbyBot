@@ -22,7 +22,8 @@ TRANSLATIONS = {
         "too_fast": "Слишком быстро! Ты заблокирован.",
         "success": "Ура!\nТеперь ты можешь писать в чате, добро пожаловать!",
         "not_your_button": "Эта кнопка предназначена для другого пользователя.",
-        "group_greet": "Привет, <b>{name}</b>!\nЧтобы писать в чате <b>{chat_name}</b>, пройди быструю проверку на бота в ЛС.\nУ тебя есть <b>3 минуты</b>.\n",
+        "group_greet": "Привет, <b>{name}</b>!\nЧтобы писать в чате <b>{chat_name}</b>, пройди быструю проверку на бота в ЛС.\n{time_limit_info}",
+        "time_limit_info": "У тебя есть <b>{timeout_min} мин.</b>\n",
         "btn_verify": "НАЖМИ, ЕСЛИ ТЫ НЕ БОТ",
         "btn_return": "Вернуться в чат",
         "too_slow": "Время вышло! Ты не успел пройти проверку вовремя и был удален из чата."
@@ -33,7 +34,8 @@ TRANSLATIONS = {
         "too_fast": "Too fast! Live humans don't click that quickly. Request denied.",
         "success": "Verification passed!\nYou are unmuted in the group, welcome!",
         "not_your_button": "This verification is for another user.",
-        "group_greet": "<b>ACCESS RESTRICTED</b>\n\nHello, <b>{name}</b>!\nTo write in <b>{chat_name}</b>, you must pass a quick anti-spam verification in PM.\n\n<b>ATTENTION:</b> You have exactly <b>3 minutes</b>, or you will be automatically kicked from the group!\n\n<b>CLICK THE BUTTON BELOW TO UNMUTE:</b>",
+        "group_greet": "<b>ACCESS RESTRICTED</b>\n\nHello, <b>{name}</b>!\nTo write in <b>{chat_name}</b>, you must pass a quick anti-spam verification in PM.\n\n{time_limit_info}<b>CLICK THE BUTTON BELOW TO UNMUTE:</b>",
+        "time_limit_info": "<b>ATTENTION:</b> You have exactly <b>{timeout_min} minutes</b>, or you will be automatically kicked from the group!\n\n",
         "btn_verify": "CLICK IF YOU ARE NOT A BOT",
         "btn_return": "Return to Chat",
         "too_slow": "Time is up! You failed to verify in time and were removed from the group."
@@ -44,7 +46,8 @@ TRANSLATIONS = {
         "too_fast": "Quá nhanh! Con người không thể bấm nhanh như vậy. Đã chặn truy cập.",
         "success": "Đã xác nhận!\nBạn đã được mở chặn trong nhóm, chào mừng bạn!",
         "not_your_button": "Nút này không dành cho bạn!",
-        "group_greet": "<b>TRUY CẬP BỊ HẠN CHẾ</b>\n\nXin chào, <b>{name}</b>!\nĐể gửi tin nhắn trong nhóm <b>{chat_name}</b>, bạn phải vượt qua xác minh chống tin rác trong tin nhắn riêng.\n\n<b>CHÚ Ý:</b> Bạn có đúng <b>3 phút</b>, nếu không bạn sẽ tự động bị xóa khỏi nhóm!\n\n<b>BẤM VÀO НÚТ BÊN DƯỚI ĐỂ MỞ CHẶN:</b>",
+        "group_greet": "<b>TRUY CẬP BỊ HẠN CHẾ</b>\n\nXin chào, <b>{name}</b>!\nĐể gửi tin nhắn trong nhóm <b>{chat_name}</b>, bạn phải vượt qua xác minh chống tin rác trong tin nhắn riêng.\n\n{time_limit_info}<b>BẤM VÀO NÚT BÊN DƯỚI ĐỂ MỞ CHẶN:</b>",
+        "time_limit_info": "<b>CHÚ Ý:</b> Bạn có đúng <b>{timeout_min} phút</b>, nếu không bạn sẽ tự động bị xóa khỏi nhóm!\n\n",
         "btn_verify": "BẤM NẾU BẠN KHÔNG PHẢI BOT",
         "btn_return": "Quay lại nhóm",
         "too_slow": "Hết giờ! Bạn đã không xác minh kịp thời và đã bị xóa khỏi nhóm."

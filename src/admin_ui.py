@@ -14,6 +14,13 @@ admin_router = Router()
 
 class AdminSettings(StatesGroup):
     waiting_for_welcome = State()
+    waiting_timeout_input = State()
+    waiting_timeout_confirm = State()
+
+
+# Лимит таймаута капчи (минуты), 0 в БД = без лимита
+TIMEOUT_MIN_MINUTES = 1
+TIMEOUT_MAX_MINUTES = 1440  # 24 часа
 
 
 async def is_chat_admin(bot: Bot, chat_id: int, user_id: int) -> bool:
@@ -32,6 +39,9 @@ def generate_settings_keyboard(chat_id: int, settings: dict) -> InlineKeyboardMa
     lang = settings.get('language', 'en')
     strictness = settings.get('captcha_strictness', 1)
     welcome = settings.get('welcome_message')
+    timeout_mins = settings.get('verification_timeout', 0)
+    if timeout_mins is None:
+        timeout_mins = 0
     
     lang_text = f"Язык: {'🇷🇺 RU' if lang == 'ru' else '🇻🇳 VI' if lang == 'vi' else '🇬🇧 EN'}"
     strictness_texts = {
@@ -42,11 +52,13 @@ def generate_settings_keyboard(chat_id: int, settings: dict) -> InlineKeyboardMa
     }
     strictness_text = strictness_texts.get(strictness, f"Строгость: {strictness}")
     welcome_text = "👋 Приветствие: Настроено" if welcome else "👋 Приветствие: Выкл"
+    timeout_text = "⏳ Таймаут: Без лимита" if timeout_mins == 0 else f"⏳ Таймаут: {timeout_mins} мин"
     
     buttons = [
         [InlineKeyboardButton(text=lang_text, callback_data=f"set_lang:{chat_id}:{lang}")],
         [InlineKeyboardButton(text=strictness_text, callback_data=f"set_strict:{chat_id}:{strictness}")],
         [InlineKeyboardButton(text=welcome_text, callback_data=f"set_welcome:{chat_id}")],
+        [InlineKeyboardButton(text=timeout_text, callback_data=f"timeout_start:{chat_id}")],
         [InlineKeyboardButton(text="Закрыть", callback_data="set_close")]
     ]
     return InlineKeyboardMarkup(inline_keyboard=buttons)
@@ -145,6 +157,199 @@ async def change_strictness_callback(callback: CallbackQuery, bot: Bot):
         )
     else:
         await callback.answer(f"Строгость изменена на {next_strict}")
+
+async def _restore_settings_message(callback: CallbackQuery, bot: Bot, chat_id: int, state: FSMContext):
+    """Возвращает сообщение к главному экрану настроек (после отмены / сохранения)."""
+    await state.clear()
+    try:
+        chat = await bot.get_chat(chat_id)
+        chat_name = chat.title or str(chat_id)
+    except TelegramAPIError:
+        chat_name = str(chat_id)
+    settings = await get_chat_settings(chat_id)
+    markup = generate_settings_keyboard(chat_id, settings)
+    await callback.message.edit_text(
+        f"⚙️ <b>Настройки для чата:</b> {chat_name}\n\nВыберите параметр для изменения:",
+        reply_markup=markup,
+        parse_mode="HTML",
+    )
+
+
+@admin_router.callback_query(F.data.startswith("timeout_start:"))
+async def timeout_start_callback(callback: CallbackQuery, state: FSMContext, bot: Bot):
+    """Открывает сценарий смены таймаута: инструкция и ввод числа (без записи в БД до подтверждения)."""
+    _, chat_id_str = callback.data.split(":", 1)
+    chat_id = int(chat_id_str)
+
+    if not await is_chat_admin(bot, chat_id, callback.from_user.id):
+        await callback.answer("У вас нет прав!", show_alert=True)
+        return
+
+    await state.set_state(AdminSettings.waiting_timeout_input)
+    await state.update_data(
+        settings_chat_id=chat_id,
+        settings_msg_id=callback.message.message_id,
+    )
+
+    markup = InlineKeyboardMarkup(
+        inline_keyboard=[
+            [InlineKeyboardButton(text="♾️ Без лимита (снять таймаут)", callback_data=f"timeout_clear:{chat_id}")],
+            [InlineKeyboardButton(text="❌ Отмена", callback_data=f"timeout_cancel:{chat_id}")],
+        ]
+    )
+
+    await callback.message.edit_text(
+        "⏳ <b>Лимит времени на прохождение капчи</b>\n\n"
+        "Сейчас новичок должен успеть нажать кнопку в группе и пройти проверку в ЛС за заданное время, "
+        "иначе он будет удалён из чата.\n\n"
+        f"📝 <b>Введи одно целое число</b> — сколько <b>минут</b> даётся на прохождение (от "
+        f"<code>{TIMEOUT_MIN_MINUTES}</code> до <code>{TIMEOUT_MAX_MINUTES}</code>).\n"
+        "Отправь отдельным сообщением, например: <code>10</code>\n\n"
+        "После ввода появятся кнопки <b>Сохранить</b> или <b>Отменить</b> — в базу попадёт только сохранённое значение.\n\n"
+        "Или нажми «Без лимита», чтобы убрать ограничение по времени.",
+        reply_markup=markup,
+        parse_mode="HTML",
+    )
+    await callback.answer()
+
+
+@admin_router.callback_query(F.data.startswith("timeout_cancel:"))
+async def timeout_cancel_callback(callback: CallbackQuery, state: FSMContext, bot: Bot):
+    """Отмена сценария таймаута с первого экрана — без изменений в БД."""
+    _, chat_id_str = callback.data.split(":", 1)
+    chat_id = int(chat_id_str)
+    if not await is_chat_admin(bot, chat_id, callback.from_user.id):
+        await callback.answer("У вас нет прав!", show_alert=True)
+        return
+    await callback.answer("Отменено.")
+    await _restore_settings_message(callback, bot, chat_id, state)
+
+
+@admin_router.callback_query(F.data.startswith("timeout_clear:"))
+async def timeout_clear_callback(callback: CallbackQuery, state: FSMContext, bot: Bot):
+    """Снять лимит (0 в БД) — одна явная запись, без цикла."""
+    _, chat_id_str = callback.data.split(":", 1)
+    chat_id = int(chat_id_str)
+    if not await is_chat_admin(bot, chat_id, callback.from_user.id):
+        await callback.answer("У вас нет прав!", show_alert=True)
+        return
+    await update_chat_setting(chat_id, "verification_timeout", 0)
+    await callback.answer("Лимит снят.")
+    await _restore_settings_message(callback, bot, chat_id, state)
+
+
+@admin_router.callback_query(F.data.startswith("timeout_save:"))
+async def timeout_save_callback(callback: CallbackQuery, state: FSMContext, bot: Bot):
+    """Подтверждение введённого значения — запись в БД один раз."""
+    _, chat_id_str = callback.data.split(":", 1)
+    chat_id = int(chat_id_str)
+    if not await is_chat_admin(bot, chat_id, callback.from_user.id):
+        await callback.answer("У вас нет прав!", show_alert=True)
+        return
+
+    data = await state.get_data()
+    pending = data.get("pending_timeout_minutes")
+    if pending is None:
+        await callback.answer("Нет данных для сохранения. Начни сначала.", show_alert=True)
+        await _restore_settings_message(callback, bot, chat_id, state)
+        return
+
+    await update_chat_setting(chat_id, "verification_timeout", int(pending))
+    await callback.answer(f"Сохранено: {pending} мин.")
+    await _restore_settings_message(callback, bot, chat_id, state)
+
+
+@admin_router.callback_query(F.data.startswith("timeout_discard:"))
+async def timeout_discard_callback(callback: CallbackQuery, state: FSMContext, bot: Bot):
+    """Отмена после ввода числа — в БД не пишем."""
+    _, chat_id_str = callback.data.split(":", 1)
+    chat_id = int(chat_id_str)
+    if not await is_chat_admin(bot, chat_id, callback.from_user.id):
+        await callback.answer("У вас нет прав!", show_alert=True)
+        return
+    await callback.answer("Изменения не сохранены.")
+    await _restore_settings_message(callback, bot, chat_id, state)
+
+
+@admin_router.message(
+    AdminSettings.waiting_timeout_input,
+    F.chat.type == "private",
+    F.text,
+    ~F.text.startswith("/"),
+)
+async def process_timeout_input(message: Message, state: FSMContext, bot: Bot):
+    """Принимает число минут, показывает подтверждение с кнопками Сохранить / Отменить."""
+    data = await state.get_data()
+    chat_id = data.get("settings_chat_id")
+    settings_msg_id = data.get("settings_msg_id")
+    if not chat_id or not settings_msg_id:
+        await state.clear()
+        return
+
+    if not await is_chat_admin(bot, chat_id, message.from_user.id):
+        await state.clear()
+        return
+
+    raw = (message.text or "").strip()
+    try:
+        minutes = int(raw)
+    except ValueError:
+        await message.answer(
+            f"Нужно целое число минут от {TIMEOUT_MIN_MINUTES} до {TIMEOUT_MAX_MINUTES}. Попробуй ещё раз."
+        )
+        return
+
+    if minutes < TIMEOUT_MIN_MINUTES or minutes > TIMEOUT_MAX_MINUTES:
+        await message.answer(
+            f"Число должно быть от {TIMEOUT_MIN_MINUTES} до {TIMEOUT_MAX_MINUTES} (минут). Попробуй ещё раз."
+        )
+        return
+
+    await state.update_data(pending_timeout_minutes=minutes)
+    await state.set_state(AdminSettings.waiting_timeout_confirm)
+
+    try:
+        await message.delete()
+    except TelegramAPIError:
+        pass
+
+    markup = InlineKeyboardMarkup(
+        inline_keyboard=[
+            [
+                InlineKeyboardButton(text="✅ Сохранить", callback_data=f"timeout_save:{chat_id}"),
+                InlineKeyboardButton(text="❌ Отменить", callback_data=f"timeout_discard:{chat_id}"),
+            ]
+        ]
+    )
+
+    try:
+        await bot.edit_message_text(
+            chat_id=message.from_user.id,
+            message_id=settings_msg_id,
+            text=(
+                f"⏳ Ты указал: <b>{minutes}</b> мин. на прохождение капчи.\n\n"
+                "Нажми <b>Сохранить</b>, чтобы записать в настройки чата, или <b>Отменить</b> — без изменений в базе."
+            ),
+            reply_markup=markup,
+            parse_mode="HTML",
+        )
+    except TelegramAPIError:
+        await message.answer(
+            f"Указано: {minutes} мин. Сохранить?",
+            reply_markup=markup,
+            parse_mode="HTML",
+        )
+
+
+@admin_router.message(
+    AdminSettings.waiting_timeout_confirm,
+    F.chat.type == "private",
+    F.text,
+    ~F.text.startswith("/"),
+)
+async def process_timeout_confirm_guard(message: Message, bot: Bot):
+    """В фазе подтверждения текст не принимаем — только кнопки."""
+    await message.answer("Сейчас нужно нажать «Сохранить» или «Отменить» под сообщением с настройкой.")
 
 @admin_router.callback_query(F.data == "set_close")
 async def close_settings_callback(callback: CallbackQuery, state: FSMContext):

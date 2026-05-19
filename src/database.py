@@ -14,6 +14,7 @@ async def init_db():
                 chat_id INTEGER PRIMARY KEY,
                 language TEXT DEFAULT 'en',
                 captcha_strictness INTEGER DEFAULT 1,
+                verification_timeout INTEGER DEFAULT 0,
                 is_active BOOLEAN DEFAULT 1,
                 joined_at TIMESTAMP
             )
@@ -27,6 +28,12 @@ async def init_db():
         # Безопасная миграция: добавляем колонку welcome_message для кастомных приветствий новичков
         try:
             await db.execute("ALTER TABLE chat_settings ADD COLUMN welcome_message TEXT")
+        except aiosqlite.OperationalError:
+            pass  # Колонка уже создана
+
+        # Безопасная миграция: добавляем колонку verification_timeout для лимита времени капчи в минутах
+        try:
+            await db.execute("ALTER TABLE chat_settings ADD COLUMN verification_timeout INTEGER DEFAULT 0")
         except aiosqlite.OperationalError:
             pass  # Колонка уже создана
 
@@ -78,7 +85,7 @@ async def get_all_active_chats() -> list:
 
 async def update_chat_setting(chat_id: int, key: str, value):
     """Обновляет конкретную настройку для чата."""
-    allowed_keys = ['language', 'captcha_strictness', 'welcome_message']
+    allowed_keys = ['language', 'captcha_strictness', 'welcome_message', 'verification_timeout']
     if key not in allowed_keys:
         raise ValueError(f"Настройка {key} не разрешена.")
         
@@ -110,13 +117,14 @@ async def migrate_chat_id(old_chat_id: int, new_chat_id: int):
             # Обновляем новый чат настройками из старого, а старый деактивируем/удаляем
             await db.execute('''
                 UPDATE chat_settings 
-                SET language = ?, captcha_strictness = ?, welcome_message = ?, title = ?, is_active = 1
+                SET language = ?, captcha_strictness = ?, welcome_message = ?, title = ?, verification_timeout = ?, is_active = 1
                 WHERE chat_id = ?
             ''', (
                 old_settings['language'],
                 old_settings['captcha_strictness'],
                 old_settings['welcome_message'],
                 old_settings['title'],
+                old_settings['verification_timeout'],
                 new_chat_id
             ))
             await db.execute('DELETE FROM chat_settings WHERE chat_id = ?', (old_chat_id,))

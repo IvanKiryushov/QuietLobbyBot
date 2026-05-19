@@ -116,11 +116,12 @@ def parse_welcome_message(text: str) -> tuple[str, InlineKeyboardMarkup | None]:
 # --- TASKS ---
 
 
-async def verification_timeout_task(chat_id: int, user_id: int, bot: Bot, lang: str):
+async def verification_timeout_task(chat_id: int, user_id: int, bot: Bot, lang: str, timeout_mins: int):
     """Фоновый таймер: если пользователь не прошел капчу, он кикается."""
-    await asyncio.sleep(VERIFICATION_TIMEOUT)
+    timeout_val = timeout_mins if timeout_mins > 0 else 3
+    await asyncio.sleep(timeout_val * 60)
     if (chat_id, user_id) in group_prompts:
-        logger.info(f"[ТАЙМАУТ] Время вышло для {user_id} в {chat_id}")
+        logger.info(f"[ТАЙМАУТ] Время вышло для {user_id} в {chat_id} (лимит {timeout_val} мин)")
         await kick_user_and_clean(bot, chat_id, user_id)
 
 # --- HANDLERS ---
@@ -151,6 +152,9 @@ async def handle_new_member(message: Message, bot: Bot):
             
         settings = await get_chat_settings(chat_id)
         strictness = settings.get('captcha_strictness', 1) if settings else 1
+        timeout_mins = settings.get('verification_timeout', 0) if settings else 0
+        if timeout_mins is None:
+            timeout_mins = 0
         
         if strictness == 0:
             # Уровень 0: Ручное одобрение.
@@ -200,16 +204,26 @@ async def handle_new_member(message: Message, bot: Bot):
             [InlineKeyboardButton(text=TRANSLATIONS[lang]["btn_verify"], url=verify_url, style="success")]
         ])
         
+        if timeout_mins > 0:
+            time_limit_text = TRANSLATIONS[lang]["time_limit_info"].format(timeout_min=timeout_mins)
+        else:
+            time_limit_text = ""
+            
         try:
             msg = await bot.send_message(
                 chat_id=chat_id,
-                text=TRANSLATIONS[lang]["group_greet"].format(name=user_name, chat_name=chat_name),
+                text=TRANSLATIONS[lang]["group_greet"].format(
+                    name=user_name,
+                    chat_name=chat_name,
+                    time_limit_info=time_limit_text
+                ),
                 reply_markup=markup,
                 parse_mode="HTML",
                 disable_notification=True
             )
             group_prompts[(chat_id, user_id)] = msg.message_id
-            asyncio.create_task(verification_timeout_task(chat_id, user_id, bot, lang))
+            if timeout_mins > 0:
+                asyncio.create_task(verification_timeout_task(chat_id, user_id, bot, lang, timeout_mins))
         except TelegramAPIError as e:
             logger.error(f"Не удалось отправить приветственное сообщение: {e}")
 
