@@ -430,7 +430,10 @@ async def mute_command(message: Message, bot: Bot, command: CommandObject):
         info_msg = await message.answer(
             f"🔇 Пользователю {target_mention} ограничен доступ к отправке сообщений <b>{duration_desc}</b>.\n"
             f"📝 Причина: {html.escape(reason)}",
-            parse_mode="HTML@moderation_router.message(
+            parse_mode="HTML"
+        )
+
+@moderation_router.message(
     F.chat.type.in_(["group", "supergroup"]),
     (F.text.startswith("/report") | F.text.contains("@admin"))
 )
