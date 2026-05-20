@@ -188,6 +188,13 @@ async def get_admin_chats(user_id: int) -> list[dict]:
             rows = await cursor.fetchall()
             return [dict(row) for row in rows]
 
+async def get_chat_admins(chat_id: int) -> list[int]:
+    """Возвращает список ID всех администраторов для конкретного чата."""
+    async with aiosqlite.connect(DB_PATH) as db:
+        async with db.execute('SELECT user_id FROM chat_admins WHERE chat_id = ?', (chat_id,)) as cursor:
+            rows = await cursor.fetchall()
+            return [row[0] for row in rows]
+
 async def record_member_join(chat_id: int, user_id: int):
     """Фиксирует вход пользователя в группу."""
     async with aiosqlite.connect(DB_PATH) as db:
