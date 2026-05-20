@@ -9,16 +9,18 @@ from aiogram.filters import Command
 from aiogram.exceptions import TelegramAPIError
 
 from keyboards import generate_emoji_captcha, TRANSLATIONS
-from database import get_chat_settings, register_chat
+from database import (
+    get_chat_settings, register_chat, check_and_consume_approved_join,
+    create_join_request, add_join_request_message, get_join_request,
+    resolve_join_request, add_approved_join
+)
 
 logger = logging.getLogger(__name__)
 captcha_router = Router()
 
-# Хранилище временных данных: (chat_id, user_id) -> message_id временного сообщения в группе
-group_prompts = {}
-
-# Хранилище одобренных заявок (для прохода без капчи при strictness=0): (chat_id, user_id) -> timestamp
-approved_join_requests = {}
+# Хранилище сессий верификации: (chat_id, user_id) -> dict с метаданными
+# dict: { "message_id": int, "started_at": float, "is_completed": bool }
+verification_sessions = {}
 
 # Таймаут верификации в секундах (180 секунд = 3 минуты)
 VERIFICATION_TIMEOUT = 180
@@ -49,10 +51,10 @@ async def kick_user_and_clean(bot: Bot, chat_id: int, user_id: int):
     except TelegramAPIError as e:
         logger.error(f"Не удалось кикнуть пользователя {user_id}: {e}")
         
-    group_msg_id = group_prompts.pop((chat_id, user_id), None)
-    if group_msg_id:
+    session = verification_sessions.pop((chat_id, user_id), None)
+    if session and session.get("message_id"):
         try:
-            await bot.delete_message(chat_id=chat_id, message_id=group_msg_id)
+            await bot.delete_message(chat_id=chat_id, message_id=session["message_id"])
         except TelegramAPIError:
             pass
 
@@ -123,12 +125,13 @@ def parse_welcome_message(text: str) -> tuple[str, InlineKeyboardMarkup | None]:
 # --- TASKS ---
 
 
-async def verification_timeout_task(chat_id: int, user_id: int, bot: Bot, lang: str, timeout_mins: int):
+async def verification_timeout_task(chat_id: int, user_id: int, message_id: int, bot: Bot, lang: str, timeout_mins: int):
     """Фоновый таймер: если пользователь не прошел капчу, он кикается."""
     timeout_val = timeout_mins if timeout_mins > 0 else 3
     await asyncio.sleep(timeout_val * 60)
-    if (chat_id, user_id) in group_prompts:
-        logger.info(f"[ТАЙМАУТ] Время вышло для {user_id} в {chat_id} (лимит {timeout_val} мин)")
+    session = verification_sessions.get((chat_id, user_id))
+    if session and session.get("message_id") == message_id and not session.get("is_completed", False):
+        logger.info(f"[ТАЙМАУТ] Время вышло для {user_id} в {chat_id} (лимит {timeout_val} мин, сообщение {message_id})")
         await kick_user_and_clean(bot, chat_id, user_id)
 
 # --- HANDLERS ---
@@ -166,12 +169,9 @@ async def handle_new_member(message: Message, bot: Bot):
         if strictness == 0:
             # Уровень 0: Ручное одобрение.
             # Проверяем, был ли пользователь одобрен через бота
-            is_approved = (chat_id, user_id) in approved_join_requests
+            is_approved = await check_and_consume_approved_join(chat_id, user_id)
             
             if is_approved:
-                # Пользователь одобрен админом в ЛС бота. Удаляем из временного списка и пропускаем без капчи.
-                approved_join_requests.pop((chat_id, user_id), None)
-                
                 welcome_msg = settings.get("welcome_message") if settings else None
                 if welcome_msg:
                     user_name_esc = html.escape(member.first_name)
@@ -232,9 +232,13 @@ async def handle_new_member(message: Message, bot: Bot):
                 parse_mode="HTML",
                 disable_notification=True
             )
-            group_prompts[(chat_id, user_id)] = msg.message_id
+            verification_sessions[(chat_id, user_id)] = {
+                "message_id": msg.message_id,
+                "started_at": time.time(),
+                "is_completed": False
+            }
             if timeout_mins > 0:
-                asyncio.create_task(verification_timeout_task(chat_id, user_id, bot, lang, timeout_mins))
+                asyncio.create_task(verification_timeout_task(chat_id, user_id, msg.message_id, bot, lang, timeout_mins))
         except TelegramAPIError as e:
             logger.error(f"Не удалось отправить приветственное сообщение: {e}")
 
@@ -261,7 +265,8 @@ async def handle_start_private(message: Message, bot: Bot):
         chat_id = int("-" + raw_chat_id[1:]) if raw_chat_id.startswith("m") else int(raw_chat_id)
         user_id = message.from_user.id
         
-        if (chat_id, user_id) not in group_prompts:
+        session = verification_sessions.get((chat_id, user_id))
+        if not session or session.get("is_completed", False):
             is_admin = False
             try:
                 member = await bot.get_chat_member(chat_id=chat_id, user_id=user_id)
@@ -329,12 +334,14 @@ async def handle_captcha_click(callback: CallbackQuery, bot: Bot):
         if is_correct:
             await bot.restrict_chat_member(chat_id=chat_id, user_id=user_id, permissions=get_permissions(is_muted=False))
             
-            group_msg_id = group_prompts.pop((chat_id, user_id), None)
-            if group_msg_id:
-                try:
-                    await bot.delete_message(chat_id=chat_id, message_id=group_msg_id)
-                except TelegramAPIError:
-                    pass
+            session = verification_sessions.pop((chat_id, user_id), None)
+            if session:
+                session["is_completed"] = True
+                if session.get("message_id"):
+                    try:
+                        await bot.delete_message(chat_id=chat_id, message_id=session["message_id"])
+                    except TelegramAPIError:
+                        pass
                     
             group_url = await get_chat_invite_url(bot, chat_id)
             markup_return = InlineKeyboardMarkup(inline_keyboard=[
@@ -374,6 +381,43 @@ async def handle_captcha_click(callback: CallbackQuery, bot: Bot):
 
 # --- MANUAL APPROVAL HANDLERS (Level 0) ---
 
+async def sync_join_request_messages(bot: Bot, chat_id: int, user_id: int, status: str, resolved_by_name: str):
+    """Синхронизирует сообщения-карточки заявок во всех ЛС администраторов."""
+    from database import get_join_request_messages, get_join_request
+    
+    req = await get_join_request(chat_id, user_id)
+    if not req:
+        return
+        
+    messages = await get_join_request_messages(chat_id, user_id)
+    
+    status_symbol = "✅" if status == "approved" else "❌"
+    resolved_word = "Одобрено" if status == "approved" else "Отклонено"
+    
+    user_name = html.escape(req.get("user_name") or "Пользователь")
+    user_username = f" (@{req['user_username']})" if req.get("user_username") else ""
+    chat_title = html.escape(req.get("chat_title") or str(chat_id))
+    
+    text = (
+        f"🔔 <b>Заявка на вступление обработана!</b>\n\n"
+        f"<b>Чат:</b> {chat_title}\n"
+        f"<b>Пользователь:</b> <a href='tg://user?id={user_id}'>{user_name}</a>{user_username}\n"
+        f"<b>ID:</b> <code>{user_id}</code>\n\n"
+        f"{status_symbol} <b>{resolved_word} администратором</b> {html.escape(resolved_by_name)}"
+    )
+    
+    for admin_id, message_id in messages:
+        try:
+            await bot.edit_message_text(
+                chat_id=admin_id,
+                message_id=message_id,
+                text=text,
+                reply_markup=None,
+                parse_mode="HTML"
+            )
+        except TelegramAPIError:
+            pass
+
 @captcha_router.chat_join_request()
 async def handle_chat_join_request(request: ChatJoinRequest, bot: Bot):
     chat_id = request.chat.id
@@ -382,19 +426,24 @@ async def handle_chat_join_request(request: ChatJoinRequest, bot: Bot):
     settings = await get_chat_settings(chat_id)
     strictness = settings.get('captcha_strictness', 1) if settings else 1
     
-    # Если строгость не 0, значит чат не в ручном режиме. Оставляем заявку висеть
-    # (или в будущем можем авто-одобрять и слать капчу)
     if strictness != 0:
         return
         
-    user_name = html.escape(request.from_user.full_name)
-    user_username = f" (@{request.from_user.username})" if request.from_user.username else ""
-    chat_name = html.escape(request.chat.title or str(chat_id))
+    user_name = request.from_user.full_name
+    user_username = request.from_user.username or ""
+    chat_name = request.chat.title or str(chat_id)
+    
+    # Создаем заявку в БД
+    await create_join_request(chat_id, user_id, user_name, user_username, chat_name)
+    
+    user_name_esc = html.escape(user_name)
+    user_username_esc = f" (@{html.escape(user_username)})" if user_username else ""
+    chat_name_esc = html.escape(chat_name)
     
     text = (
         f"🔔 <b>Новая заявка на вступление!</b>\n\n"
-        f"<b>Чат:</b> {chat_name}\n"
-        f"<b>Пользователь:</b> <a href='tg://user?id={user_id}'>{user_name}</a>{user_username}\n"
+        f"<b>Чат:</b> {chat_name_esc}\n"
+        f"<b>Пользователь:</b> <a href='tg://user?id={user_id}'>{user_name_esc}</a>{user_username_esc}\n"
         f"<b>ID:</b> <code>{user_id}</code>"
     )
     
@@ -410,14 +459,15 @@ async def handle_chat_join_request(request: ChatJoinRequest, bot: Bot):
         for admin in admins:
             if not admin.user.is_bot:
                 try:
-                    await bot.send_message(
+                    msg = await bot.send_message(
                         chat_id=admin.user.id,
                         text=text,
                         reply_markup=markup,
                         parse_mode="HTML"
                     )
+                    # Регистрируем отправленное сообщение для синхронизации
+                    await add_join_request_message(chat_id, user_id, admin.user.id, msg.message_id)
                 except TelegramAPIError:
-                    # Администратор не запускал бота в ЛС, игнорируем
                     pass
     except TelegramAPIError as e:
         logger.error(f"Не удалось получить список администраторов чата {chat_id}: {e}")
@@ -428,23 +478,60 @@ async def approve_join_callback(callback: CallbackQuery, bot: Bot):
     chat_id = int(chat_id_str)
     user_id = int(user_id_str)
     
+    # 1. Проверяем текущее состояние заявки в БД
+    req = await get_join_request(chat_id, user_id)
+    if not req or req['status'] != 'pending':
+        resolved_by = req['resolved_by_name'] if req else "администратором"
+        status_text = "одобрена" if req and req['status'] == 'approved' else "отклонена"
+        await callback.answer(f"⚠️ Эта заявка уже была {status_text} ({resolved_by})!", show_alert=True)
+        if req:
+            status_symbol = "✅" if req['status'] == 'approved' else "❌"
+            resolved_word = "Одобрено" if req['status'] == 'approved' else "Отклонено"
+            user_name_esc = html.escape(req.get("user_name") or "Пользователь")
+            user_username_esc = f" (@{html.escape(req['user_username'])})" if req.get("user_username") else ""
+            chat_name_esc = html.escape(req.get("chat_title") or str(chat_id))
+            try:
+                await callback.message.edit_text(
+                    text=(
+                        f"🔔 <b>Заявка на вступление обработана!</b>\n\n"
+                        f"<b>Чат:</b> {chat_name_esc}\n"
+                        f"<b>Пользователь:</b> <a href='tg://user?id={user_id}'>{user_name_esc}</a>{user_username_esc}\n"
+                        f"<b>ID:</b> <code>{user_id}</code>\n\n"
+                        f"{status_symbol} <b>{resolved_word} администратором</b> {html.escape(resolved_by)}"
+                    ),
+                    reply_markup=None,
+                    parse_mode="HTML"
+                )
+            except TelegramAPIError:
+                pass
+        return
+
+    admin_name = callback.from_user.full_name
+    admin_id = callback.from_user.id
+    
+    # 2. Атомарно переводим статус в 'approved'
+    success = await resolve_join_request(chat_id, user_id, 'approved', admin_id, admin_name)
+    if not success:
+        req = await get_join_request(chat_id, user_id)
+        resolved_by = req['resolved_by_name'] if req else "администратором"
+        await callback.answer(f"⚠️ Синхронизация: Заявка уже обработана ({resolved_by})!", show_alert=True)
+        return
+        
     try:
+        # 3. Одобряем запрос в Telegram
         await bot.approve_chat_join_request(chat_id=chat_id, user_id=user_id)
         
-        # Добавляем в список одобренных в памяти
-        approved_join_requests[(chat_id, user_id)] = time.time()
+        # 4. Добавляем в кэш одобрений в БД
+        await add_approved_join(chat_id, user_id)
         
-        # Обновляем сообщение у админа
-        await callback.message.edit_text(
-            text=f"{callback.message.html_text}\n\n✅ <b>Одобрено администратором</b> {html.escape(callback.from_user.full_name)}",
-            reply_markup=None,
-            parse_mode="HTML"
-        )
         await callback.answer("Заявка одобрена!")
         
+        # 5. Фоном обновляем карточки у всех остальных админов
+        asyncio.create_task(sync_join_request_messages(bot, chat_id, user_id, 'approved', admin_name))
+        
     except TelegramAPIError as e:
-        logger.error(f"Не удалось одобрить заявку: {e}")
-        await callback.answer("Ошибка! Возможно, пользователь уже принят или отозвал заявку.", show_alert=True)
+        logger.error(f"Не удалось одобрить заявку в Telegram: {e}")
+        await callback.answer("Ошибка Telegram API при одобрении.", show_alert=True)
 
 @captcha_router.callback_query(F.data.startswith("decline_join:"))
 async def decline_join_callback(callback: CallbackQuery, bot: Bot):
@@ -452,18 +539,55 @@ async def decline_join_callback(callback: CallbackQuery, bot: Bot):
     chat_id = int(chat_id_str)
     user_id = int(user_id_str)
     
+    # 1. Проверяем текущее состояние заявки в БД
+    req = await get_join_request(chat_id, user_id)
+    if not req or req['status'] != 'pending':
+        resolved_by = req['resolved_by_name'] if req else "администратором"
+        status_text = "одобрена" if req and req['status'] == 'approved' else "отклонена"
+        await callback.answer(f"⚠️ Эта заявка уже была {status_text} ({resolved_by})!", show_alert=True)
+        if req:
+            status_symbol = "✅" if req['status'] == 'approved' else "❌"
+            resolved_word = "Одобрено" if req['status'] == 'approved' else "Отклонено"
+            user_name_esc = html.escape(req.get("user_name") or "Пользователь")
+            user_username_esc = f" (@{html.escape(req['user_username'])})" if req.get("user_username") else ""
+            chat_name_esc = html.escape(req.get("chat_title") or str(chat_id))
+            try:
+                await callback.message.edit_text(
+                    text=(
+                        f"🔔 <b>Заявка на вступление обработана!</b>\n\n"
+                        f"<b>Чат:</b> {chat_name_esc}\n"
+                        f"<b>Пользователь:</b> <a href='tg://user?id={user_id}'>{user_name_esc}</a>{user_username_esc}\n"
+                        f"<b>ID:</b> <code>{user_id}</code>\n\n"
+                        f"{status_symbol} <b>{resolved_word} администратором</b> {html.escape(resolved_by)}"
+                    ),
+                    reply_markup=None,
+                    parse_mode="HTML"
+                )
+            except TelegramAPIError:
+                pass
+        return
+
+    admin_name = callback.from_user.full_name
+    admin_id = callback.from_user.id
+    
+    # 2. Атомарно переводим статус в 'declined'
+    success = await resolve_join_request(chat_id, user_id, 'declined', admin_id, admin_name)
+    if not success:
+        req = await get_join_request(chat_id, user_id)
+        resolved_by = req['resolved_by_name'] if req else "администратором"
+        await callback.answer(f"⚠️ Синхронизация: Заявка уже обработана ({resolved_by})!", show_alert=True)
+        return
+        
     try:
+        # 3. Отклоняем запрос в Telegram
         await bot.decline_chat_join_request(chat_id=chat_id, user_id=user_id)
         
-        # Обновляем сообщение у админа
-        await callback.message.edit_text(
-            text=f"{callback.message.html_text}\n\n❌ <b>Отклонено администратором</b> {html.escape(callback.from_user.full_name)}",
-            reply_markup=None,
-            parse_mode="HTML"
-        )
         await callback.answer("Заявка отклонена!")
         
+        # 4. Фоном обновляем карточки у всех остальных админов
+        asyncio.create_task(sync_join_request_messages(bot, chat_id, user_id, 'declined', admin_name))
+        
     except TelegramAPIError as e:
-        logger.error(f"Не удалось отклонить заявку: {e}")
-        await callback.answer("Ошибка! Возможно, заявка уже обработана.", show_alert=True)
+        logger.error(f"Не удалось отклонить заявку в Telegram: {e}")
+        await callback.answer("Ошибка Telegram API при отклонении.", show_alert=True)
 

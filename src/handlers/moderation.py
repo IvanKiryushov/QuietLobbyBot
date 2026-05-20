@@ -84,6 +84,60 @@ def has_links(message: Message) -> bool:
             return True
     return False
 
+async def sync_report_messages(bot: Bot, report_id: str, new_status: str, resolved_by_name: str):
+    """
+    Асинхронно обновляет карточки жалобы у всех администраторов на основе текущего статуса.
+    """
+    from database import get_report, get_report_messages
+    
+    report = await get_report(report_id)
+    if not report:
+        logger.warning(f"Попытка синхронизации несуществующего отчета: {report_id}")
+        return
+        
+    raw_text = report['raw_text']
+    chat_id = report['chat_id']
+    
+    # Формируем новый текст и клавиатуру
+    new_text = raw_text
+    markup = None
+    
+    if new_status == 'banned':
+        new_text += f"\n\n✅ <b>Выполнен бан нарушителя</b> администратором {resolved_by_name}."
+        markup = InlineKeyboardMarkup(inline_keyboard=[
+            [InlineKeyboardButton(text="🔓 Разбанить", callback_data=f"rep_unban:{report_id}")]
+        ])
+    elif new_status == 'muted':
+        new_text += f"\n\n✅ <b>Выполнен мьют нарушителя</b> администратором {resolved_by_name}."
+        markup = InlineKeyboardMarkup(inline_keyboard=[
+            [InlineKeyboardButton(text="🔊 Размьютить", callback_data=f"rep_unmute:{report_id}")]
+        ])
+    elif new_status == 'deleted':
+        new_text += f"\n\n✅ <b>Сообщение удалено</b> администратором {resolved_by_name}."
+    elif new_status == 'dismissed':
+        new_text += f"\n\n❌ <b>Жалоба отклонена</b> администратором {resolved_by_name}."
+    elif new_status == 'unbanned':
+        new_text += f"\n\n✅ <b>Выполнен бан нарушителя</b> (разблокирован администратором {resolved_by_name})."
+    elif new_status == 'unmuted':
+        new_text += f"\n\n✅ <b>Выполнен мьют нарушителя</b> (ограничения сняты администратором {resolved_by_name})."
+
+    # Получаем все отправленные сообщения
+    messages = await get_report_messages(report_id)
+    
+    # Редактируем сообщения
+    for admin_id, msg_id in messages:
+        try:
+            await bot.edit_message_text(
+                chat_id=admin_id,
+                message_id=msg_id,
+                text=new_text,
+                reply_markup=markup,
+                parse_mode="HTML"
+            )
+        except TelegramAPIError as e:
+            # Игнорируем ошибки, если сообщение удалено или чат заблокирован
+            logger.debug(f"Не удалось отредактировать сообщение {msg_id} у админа {admin_id}: {e}")
+
 # --- АНТИСПАМ ССЫЛОК ---
 
 @moderation_router.message(F.chat.type.in_(["group", "supergroup"]), has_links)
@@ -376,72 +430,7 @@ async def mute_command(message: Message, bot: Bot, command: CommandObject):
         info_msg = await message.answer(
             f"🔇 Пользователю {target_mention} ограничен доступ к отправке сообщений <b>{duration_desc}</b>.\n"
             f"📝 Причина: {html.escape(reason)}",
-            parse_mode="HTML"
-        )
-        asyncio.create_task(delete_message_after_delay(info_msg, 10))
-        
-    except TelegramAPIError as e:
-        logger.error(f"Ошибка мьюта пользователя {target_user_id}: {e}")
-        await message.answer(f"⚠️ Не удалось ограничить пользователя: {e}")
-
-    try:
-        await message.delete()
-    except TelegramAPIError:
-        pass
-
-
-@moderation_router.message(Command(commands=["unmute"]), F.chat.type.in_(["group", "supergroup"]))
-async def unmute_command(message: Message, bot: Bot, command: CommandObject):
-    """Команда /unmute. Снимает ограничения на отправку сообщений (по reply или ID)."""
-    if not await is_user_admin(bot, message.chat.id, message.from_user.id):
-        return
-
-    target_user_id = None
-
-    if message.reply_to_message:
-        target_user_id = message.reply_to_message.from_user.id
-    elif command.args:
-        try:
-            target_user_id = int(command.args.split()[0])
-        except ValueError:
-            pass
-
-    if not target_user_id:
-        msg = await message.answer(
-            "⚠️ Использование: напишите <code>/unmute</code> в ответ на сообщение\n"
-            "или <code>/unmute ID_пользователя</code>.",
-            parse_mode="HTML"
-        )
-        asyncio.create_task(delete_message_after_delay(msg, 10))
-        try:
-            await message.delete()
-        except TelegramAPIError:
-            pass
-        return
-
-    try:
-        # Снимаем ограничения (выдаем полные права)
-        await bot.restrict_chat_member(
-            chat_id=message.chat.id,
-            user_id=target_user_id,
-            permissions=get_permissions(is_muted=False)
-        )
-        logger.info(f"[MODERATION] Админ {message.from_user.id} снял ограничения с {target_user_id} в {message.chat.id}")
-        
-        info_msg = await message.answer(f"🔊 Пользователю <code>{target_user_id}</code> разрешено отправлять сообщения.", parse_mode="HTML")
-        asyncio.create_task(delete_message_after_delay(info_msg, 10))
-    except TelegramAPIError as e:
-        logger.error(f"Ошибка размута пользователя {target_user_id}: {e}")
-        await message.answer(f"⚠️ Не удалось снять ограничения: {e}")
-
-    try:
-        await message.delete()
-    except TelegramAPIError:
-        pass
-
-# --- ПОЖАЛОВАТЬСЯ АДМИНИСТРАТОРУ (REPORT) ---
-
-@moderation_router.message(
+            parse_mode="HTML@moderation_router.message(
     F.chat.type.in_(["group", "supergroup"]),
     (F.text.startswith("/report") | F.text.contains("@admin"))
 )
@@ -477,7 +466,7 @@ async def report_handler(message: Message, bot: Bot):
         target_text = target_text[:300] + "..."
         
     # Получаем список администраторов из БД
-    from database import get_chat_admins
+    from database import get_chat_admins, create_report, add_report_message
     try:
         admin_ids = await get_chat_admins(chat_id)
     except Exception as e:
@@ -514,21 +503,27 @@ async def report_handler(message: Message, bot: Bot):
         f"<b>Сообщение:</b>\n<blockquote>{html.escape(target_text)}</blockquote>"
     )
     
+    try:
+        report_id = await create_report(chat_id, target.id, message_id, admin_text)
+    except Exception as e:
+        logger.error(f"Не удалось создать отчет в БД: {e}")
+        report_id = f"{chat_id}:{message_id}"
+    
     # Набор инлайн-кнопок для быстрой модерации
     buttons = [
         [
-            InlineKeyboardButton(text="🚫 Бан", callback_data=f"rep_ban:{chat_id}:{target.id}:{message_id}"),
-            InlineKeyboardButton(text="🔇 Мьют", callback_data=f"rep_mute:{chat_id}:{target.id}:{message_id}")
+            InlineKeyboardButton(text="🚫 Бан", callback_data=f"rep_ban:{report_id}"),
+            InlineKeyboardButton(text="🔇 Мьют", callback_data=f"rep_mute:{report_id}")
         ],
         [
-            InlineKeyboardButton(text="🗑 Удалить сообщение", callback_data=f"rep_del:{chat_id}:{message_id}")
+            InlineKeyboardButton(text="🗑 Удалить сообщение", callback_data=f"rep_del:{report_id}")
         ]
     ]
     
     if msg_link:
         buttons[1].append(InlineKeyboardButton(text="🔗 Перейти к сообщению", url=msg_link))
         
-    buttons.append([InlineKeyboardButton(text="❌ Отклонить", callback_data="rep_dismiss")])
+    buttons.append([InlineKeyboardButton(text="❌ Отклонить", callback_data=f"rep_dismiss:{report_id}")])
     
     markup = InlineKeyboardMarkup(inline_keyboard=buttons)
     
@@ -538,34 +533,69 @@ async def report_handler(message: Message, bot: Bot):
             # Не шлем жалобу самому себе, если админ пожаловался
             continue
         try:
-            await bot.send_message(
+            sent_msg = await bot.send_message(
                 chat_id=admin_id,
                 text=admin_text,
                 reply_markup=markup,
                 parse_mode="HTML"
             )
+            try:
+                await add_report_message(report_id, admin_id, sent_msg.message_id)
+            except Exception as e:
+                logger.error(f"Не удалось сохранить report_message в БД: {e}")
         except TelegramAPIError:
             # Админ не запустил бота в ЛС
             pass
+
 
 # --- ОБРАБОТЧИКИ КНОПОК БЫСТРОЙ МОДЕРАЦИИ ИЗ ЛС ---
 
 @moderation_router.callback_query(F.data.startswith("rep_ban:"))
 async def handle_report_ban(callback: CallbackQuery, bot: Bot):
     """Обрабатывает кнопку «Бан» в карточке жалобы."""
-    parts = callback.data.split(":")
-    chat_id = int(parts[1])
-    target_user_id = int(parts[2])
-    message_id = int(parts[3])
+    report_id = callback.data.split(":", 1)[1]
+    
+    from database import get_report, resolve_report, record_member_leave
+    
+    report = await get_report(report_id)
+    if not report:
+        await callback.answer("⚠️ Жалоба устарела или не найдена в базе данных.", show_alert=True)
+        return
+        
+    chat_id = report['chat_id']
+    target_user_id = report['target_user_id']
+    message_id = report['target_message_id']
     
     if not await is_user_admin(bot, chat_id, callback.from_user.id):
         await callback.answer("У вас нет прав администратора в этой группе!", show_alert=True)
         return
         
+    if report['status'] != 'pending':
+        status_desc = {
+            'banned': 'заблокировал нарушителя',
+            'muted': 'замьютил нарушителя',
+            'deleted': 'удалил сообщение',
+            'dismissed': 'отклонил жалобу'
+        }.get(report['status'], 'обработал жалобу')
+        await callback.answer(f"⚠️ Жалоба уже обработана!\nАдминистратор {report['resolved_by_name']} {status_desc}.", show_alert=True)
+        return
+        
+    admin_name = callback.from_user.full_name
+    success = await resolve_report(report_id, 'banned', callback.from_user.id, admin_name)
+    if not success:
+        report = await get_report(report_id)
+        status_desc = {
+            'banned': 'заблокировал нарушителя',
+            'muted': 'замьютил нарушителя',
+            'deleted': 'удалил сообщение',
+            'dismissed': 'отклонил жалобу'
+        }.get(report['status'], 'обработал жалобу')
+        await callback.answer(f"⚠️ Жалоба уже обработана!\nАдминистратор {report['resolved_by_name']} {status_desc}.", show_alert=True)
+        return
+        
     try:
         # Баним пользователя в группе
         await bot.ban_chat_member(chat_id=chat_id, user_id=target_user_id)
-        from database import record_member_leave
         await record_member_leave(chat_id, target_user_id, is_kick=True)
         
         # Пытаемся удалить сообщение
@@ -574,18 +604,8 @@ async def handle_report_ban(callback: CallbackQuery, bot: Bot):
         except TelegramAPIError:
             pass
             
-        # Клавиатура с кнопкой быстрого разбана
-        markup = InlineKeyboardMarkup(inline_keyboard=[
-            [InlineKeyboardButton(text="🔓 Разбанить", callback_data=f"rep_unban:{chat_id}:{target_user_id}")]
-        ])
-            
-        # Обновляем карточку жалобы в ЛС админа
-        await callback.message.edit_text(
-            text=f"{callback.message.html_text}\n\n✅ <b>Выполнен бан нарушителя</b> администратором {callback.from_user.mention_html()}.",
-            reply_markup=markup,
-            parse_mode="HTML"
-        )
         await callback.answer("Пользователь забанен, сообщение удалено.")
+        asyncio.create_task(sync_report_messages(bot, report_id, 'banned', callback.from_user.mention_html()))
     except TelegramAPIError as e:
         logger.error(f"Не удалось выполнить бан через репорт: {e}")
         await callback.answer(f"Ошибка выполнения: {e}", show_alert=True)
@@ -594,13 +614,44 @@ async def handle_report_ban(callback: CallbackQuery, bot: Bot):
 @moderation_router.callback_query(F.data.startswith("rep_mute:"))
 async def handle_report_mute(callback: CallbackQuery, bot: Bot):
     """Обрабатывает кнопку «Мьют» в карточке жалобы."""
-    parts = callback.data.split(":")
-    chat_id = int(parts[1])
-    target_user_id = int(parts[2])
-    message_id = int(parts[3])
+    report_id = callback.data.split(":", 1)[1]
+    
+    from database import get_report, resolve_report
+    
+    report = await get_report(report_id)
+    if not report:
+        await callback.answer("⚠️ Жалоба устарела или не найдена в базе данных.", show_alert=True)
+        return
+        
+    chat_id = report['chat_id']
+    target_user_id = report['target_user_id']
+    message_id = report['target_message_id']
     
     if not await is_user_admin(bot, chat_id, callback.from_user.id):
         await callback.answer("У вас нет прав администратора в этой группе!", show_alert=True)
+        return
+        
+    if report['status'] != 'pending':
+        status_desc = {
+            'banned': 'заблокировал нарушителя',
+            'muted': 'замьютил нарушителя',
+            'deleted': 'удалил сообщение',
+            'dismissed': 'отклонил жалобу'
+        }.get(report['status'], 'обработал жалобу')
+        await callback.answer(f"⚠️ Жалоба уже обработана!\nАдминистратор {report['resolved_by_name']} {status_desc}.", show_alert=True)
+        return
+        
+    admin_name = callback.from_user.full_name
+    success = await resolve_report(report_id, 'muted', callback.from_user.id, admin_name)
+    if not success:
+        report = await get_report(report_id)
+        status_desc = {
+            'banned': 'заблокировал нарушителя',
+            'muted': 'замьютил нарушителя',
+            'deleted': 'удалил сообщение',
+            'dismissed': 'отклонил жалобу'
+        }.get(report['status'], 'обработал жалобу')
+        await callback.answer(f"⚠️ Жалоба уже обработана!\nАдминистратор {report['resolved_by_name']} {status_desc}.", show_alert=True)
         return
         
     try:
@@ -617,17 +668,8 @@ async def handle_report_mute(callback: CallbackQuery, bot: Bot):
         except TelegramAPIError:
             pass
             
-        # Клавиатура с кнопкой быстрого размута
-        markup = InlineKeyboardMarkup(inline_keyboard=[
-            [InlineKeyboardButton(text="🔊 Размьютить", callback_data=f"rep_unmute:{chat_id}:{target_user_id}")]
-        ])
-            
-        await callback.message.edit_text(
-            text=f"{callback.message.html_text}\n\n✅ <b>Выполнен мьют нарушителя</b> администратором {callback.from_user.mention_html()}.",
-            reply_markup=markup,
-            parse_mode="HTML"
-        )
         await callback.answer("Права пользователя ограничены, сообщение удалено.")
+        asyncio.create_task(sync_report_messages(bot, report_id, 'muted', callback.from_user.mention_html()))
     except TelegramAPIError as e:
         logger.error(f"Не удалось выполнить мьют через репорт: {e}")
         await callback.answer(f"Ошибка выполнения: {e}", show_alert=True)
@@ -636,9 +678,17 @@ async def handle_report_mute(callback: CallbackQuery, bot: Bot):
 @moderation_router.callback_query(F.data.startswith("rep_unban:"))
 async def handle_report_unban(callback: CallbackQuery, bot: Bot):
     """Обрабатывает кнопку «Разбанить» в карточке жалобы."""
-    parts = callback.data.split(":")
-    chat_id = int(parts[1])
-    target_user_id = int(parts[2])
+    report_id = callback.data.split(":", 1)[1]
+    
+    from database import get_report, update_report_status_unconditionally
+    
+    report = await get_report(report_id)
+    if not report:
+        await callback.answer("⚠️ Жалоба устарела или не найдена в базе данных.", show_alert=True)
+        return
+        
+    chat_id = report['chat_id']
+    target_user_id = report['target_user_id']
     
     if not await is_user_admin(bot, chat_id, callback.from_user.id):
         await callback.answer("У вас нет прав администратора в этой группе!", show_alert=True)
@@ -646,12 +696,9 @@ async def handle_report_unban(callback: CallbackQuery, bot: Bot):
         
     try:
         await bot.unban_chat_member(chat_id=chat_id, user_id=target_user_id, only_if_banned=True)
-        await callback.message.edit_text(
-            text=f"{callback.message.html_text}\n\n🔊 <b>Пользователь разблокирован</b> администратором {callback.from_user.mention_html()}.",
-            reply_markup=None,
-            parse_mode="HTML"
-        )
+        await update_report_status_unconditionally(report_id, 'unbanned', callback.from_user.id, callback.from_user.full_name)
         await callback.answer("Пользователь разбанен.")
+        asyncio.create_task(sync_report_messages(bot, report_id, 'unbanned', callback.from_user.mention_html()))
     except TelegramAPIError as e:
         logger.error(f"Не удалось выполнить разбан через репорт: {e}")
         await callback.answer(f"Ошибка разбана: {e}", show_alert=True)
@@ -660,9 +707,17 @@ async def handle_report_unban(callback: CallbackQuery, bot: Bot):
 @moderation_router.callback_query(F.data.startswith("rep_unmute:"))
 async def handle_report_unmute(callback: CallbackQuery, bot: Bot):
     """Обрабатывает кнопку «Размьютить» в карточке жалобы."""
-    parts = callback.data.split(":")
-    chat_id = int(parts[1])
-    target_user_id = int(parts[2])
+    report_id = callback.data.split(":", 1)[1]
+    
+    from database import get_report, update_report_status_unconditionally
+    
+    report = await get_report(report_id)
+    if not report:
+        await callback.answer("⚠️ Жалоба устарела или не найдена в базе данных.", show_alert=True)
+        return
+        
+    chat_id = report['chat_id']
+    target_user_id = report['target_user_id']
     
     if not await is_user_admin(bot, chat_id, callback.from_user.id):
         await callback.answer("У вас нет прав администратора в этой группе!", show_alert=True)
@@ -674,12 +729,9 @@ async def handle_report_unmute(callback: CallbackQuery, bot: Bot):
             user_id=target_user_id,
             permissions=get_permissions(is_muted=False)
         )
-        await callback.message.edit_text(
-            text=f"{callback.message.html_text}\n\n🔊 <b>Ограничения отправки сообщений сняты</b> администратором {callback.from_user.mention_html()}.",
-            reply_markup=None,
-            parse_mode="HTML"
-        )
+        await update_report_status_unconditionally(report_id, 'unmuted', callback.from_user.id, callback.from_user.full_name)
         await callback.answer("Пользователь размьючен.")
+        asyncio.create_task(sync_report_messages(bot, report_id, 'unmuted', callback.from_user.mention_html()))
     except TelegramAPIError as e:
         logger.error(f"Не удалось выполнить размьют через репорт: {e}")
         await callback.answer(f"Ошибка размута: {e}", show_alert=True)
@@ -688,34 +740,94 @@ async def handle_report_unmute(callback: CallbackQuery, bot: Bot):
 @moderation_router.callback_query(F.data.startswith("rep_del:"))
 async def handle_report_del(callback: CallbackQuery, bot: Bot):
     """Обрабатывает кнопку «Удалить сообщение» в карточке жалобы."""
-    parts = callback.data.split(":")
-    chat_id = int(parts[1])
-    message_id = int(parts[2])
+    report_id = callback.data.split(":", 1)[1]
+    
+    from database import get_report, resolve_report
+    
+    report = await get_report(report_id)
+    if not report:
+        await callback.answer("⚠️ Жалоба устарела или не найдена в базе данных.", show_alert=True)
+        return
+        
+    chat_id = report['chat_id']
+    message_id = report['target_message_id']
     
     if not await is_user_admin(bot, chat_id, callback.from_user.id):
         await callback.answer("У вас нет прав администратора в этой группе!", show_alert=True)
         return
         
+    if report['status'] != 'pending':
+        status_desc = {
+            'banned': 'заблокировал нарушителя',
+            'muted': 'замьютил нарушителя',
+            'deleted': 'удалил сообщение',
+            'dismissed': 'отклонил жалобу'
+        }.get(report['status'], 'обработал жалобу')
+        await callback.answer(f"⚠️ Жалоба уже обработана!\nАдминистратор {report['resolved_by_name']} {status_desc}.", show_alert=True)
+        return
+        
+    admin_name = callback.from_user.full_name
+    success = await resolve_report(report_id, 'deleted', callback.from_user.id, admin_name)
+    if not success:
+        report = await get_report(report_id)
+        status_desc = {
+            'banned': 'заблокировал нарушителя',
+            'muted': 'замьютил нарушителя',
+            'deleted': 'удалил сообщение',
+            'dismissed': 'отклонил жалобу'
+        }.get(report['status'], 'обработал жалобу')
+        await callback.answer(f"⚠️ Жалоба уже обработана!\nАдминистратор {report['resolved_by_name']} {status_desc}.", show_alert=True)
+        return
+        
     try:
         await bot.delete_message(chat_id=chat_id, message_id=message_id)
-        
-        await callback.message.edit_text(
-            text=f"{callback.message.html_text}\n\n✅ <b>Сообщение удалено</b> администратором {callback.from_user.mention_html()}.",
-            reply_markup=None,
-            parse_mode="HTML"
-        )
         await callback.answer("Сообщение удалено.")
+        asyncio.create_task(sync_report_messages(bot, report_id, 'deleted', callback.from_user.mention_html()))
     except TelegramAPIError as e:
         logger.error(f"Не удалось удалить сообщение через репорт: {e}")
         await callback.answer(f"Ошибка выполнения: {e}", show_alert=True)
 
 
-@moderation_router.callback_query(F.data == "rep_dismiss")
-async def handle_report_dismiss(callback: CallbackQuery):
+@moderation_router.callback_query(F.data.startswith("rep_dismiss:"))
+async def handle_report_dismiss(callback: CallbackQuery, bot: Bot):
     """Обрабатывает кнопку «Отклонить» в карточке жалобы."""
-    await callback.message.edit_text(
-        text=f"{callback.message.html_text}\n\n❌ <b>Жалоба отклонена</b> администратором {callback.from_user.mention_html()}.",
-        reply_markup=None,
-        parse_mode="HTML"
-    )
+    report_id = callback.data.split(":", 1)[1]
+    
+    from database import get_report, resolve_report
+    
+    report = await get_report(report_id)
+    if not report:
+        await callback.answer("⚠️ Жалоба устарела или не найдена в базе данных.", show_alert=True)
+        return
+        
+    chat_id = report['chat_id']
+    
+    if not await is_user_admin(bot, chat_id, callback.from_user.id):
+        await callback.answer("У вас нет прав администратора в этой группе!", show_alert=True)
+        return
+        
+    if report['status'] != 'pending':
+        status_desc = {
+            'banned': 'заблокировал нарушителя',
+            'muted': 'замьютил нарушителя',
+            'deleted': 'удалил сообщение',
+            'dismissed': 'отклонил жалобу'
+        }.get(report['status'], 'обработал жалобу')
+        await callback.answer(f"⚠️ Жалоба уже обработана!\nАдминистратор {report['resolved_by_name']} {status_desc}.", show_alert=True)
+        return
+        
+    admin_name = callback.from_user.full_name
+    success = await resolve_report(report_id, 'dismissed', callback.from_user.id, admin_name)
+    if not success:
+        report = await get_report(report_id)
+        status_desc = {
+            'banned': 'заблокировал нарушителя',
+            'muted': 'замьютил нарушителя',
+            'deleted': 'удалил сообщение',
+            'dismissed': 'отклонил жалобу'
+        }.get(report['status'], 'обработал жалобу')
+        await callback.answer(f"⚠️ Жалоба уже обработана!\nАдминистратор {report['resolved_by_name']} {status_desc}.", show_alert=True)
+        return
+        
     await callback.answer("Жалоба отклонена.")
+    asyncio.create_task(sync_report_messages(bot, report_id, 'dismissed', callback.from_user.mention_html()))

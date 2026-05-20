@@ -103,11 +103,18 @@ def generate_strictness_keyboard(chat_id: int, pending_strictness: int) -> Inlin
     ])
     return InlineKeyboardMarkup(inline_keyboard=buttons)
 
-async def open_settings_panel(event: Message | CallbackQuery, bot: Bot, chat_id: int, show_back: bool = False):
+async def open_settings_panel(event: Message | CallbackQuery, bot: Bot, chat_id: int, show_back: bool = False, state: FSMContext = None):
     """Открывает панель настроек чата, если есть права (отправляя новое или редактируя старое сообщение)."""
     user_id = event.from_user.id
     is_callback = isinstance(event, CallbackQuery)
     
+    # Сбрасываем любые незавершенные состояния FSM при открытии/смене настроек чата
+    if state:
+        current_state = await state.get_state()
+        if current_state:
+            await state.clear()
+            logger.info(f"Сброшено состояние FSM ({current_state}) для пользователя {user_id} при открытии настроек чата {chat_id}")
+            
     if not await is_chat_admin(bot, chat_id, user_id):
         error_msg = "У вас нет прав администратора в этом чате или бот не добавлен в этот чат."
         if is_callback:
@@ -141,14 +148,14 @@ async def open_settings_panel(event: Message | CallbackQuery, bot: Bot, chat_id:
         await event.answer(text, reply_markup=markup, parse_mode="HTML")
 
 @admin_router.message(F.chat.type == "private", F.forward_from_chat)
-async def handle_forwarded_message(message: Message, bot: Bot):
+async def handle_forwarded_message(message: Message, bot: Bot, state: FSMContext):
     """Обрабатывает пересланные из публичного чата сообщения для открытия настроек."""
     chat_id = message.forward_from_chat.id
     if message.forward_from_chat.type in ["group", "supergroup"]:
-        await open_settings_panel(message, bot, chat_id)
+        await open_settings_panel(message, bot, chat_id, state=state)
 
 @admin_router.message(Command(commands=["start"]), F.chat.type == "private", F.text.startswith("/start set_"))
-async def handle_start_settings(message: Message, bot: Bot):
+async def handle_start_settings(message: Message, bot: Bot, state: FSMContext):
     """Обрабатывает DeepLink старт вида /start set_-100123..."""
     args = message.text.split()
     # Пропускаем обычный start и старт верификации (он в handlers.py)
@@ -160,7 +167,7 @@ async def handle_start_settings(message: Message, bot: Bot):
                 chat_id = int("-" + raw_chat_id[1:])
             else:
                 chat_id = int(raw_chat_id)
-            await open_settings_panel(message, bot, chat_id)
+            await open_settings_panel(message, bot, chat_id, state=state)
         except ValueError:
             await message.answer("Неверный формат ссылки настроек.")
 
@@ -212,11 +219,11 @@ async def handle_settings_private(message: Message, bot: Bot):
     await show_admin_chats(message, bot)
 
 @admin_router.callback_query(F.data.startswith("adm_set:"))
-async def handle_admin_set_callback(callback: CallbackQuery, bot: Bot):
+async def handle_admin_set_callback(callback: CallbackQuery, bot: Bot, state: FSMContext):
     """Открывает настройки конкретного чата из списка в ЛС."""
     chat_id = int(callback.data.split(":")[1])
     # Передаем show_back=True, чтобы кнопка «⬅️ К списку групп» была видна
-    await open_settings_panel(callback, bot, chat_id, show_back=True)
+    await open_settings_panel(callback, bot, chat_id, show_back=True, state=state)
 
 @admin_router.callback_query(F.data == "adm_back")
 async def handle_admin_back_callback(callback: CallbackQuery, bot: Bot):
