@@ -19,6 +19,9 @@ class AdminSettings(StatesGroup):
     waiting_timeout_confirm = State()
 
 
+# Системный ID, используемый Telegram для отправки сообщений от имени анонимных администраторов групп (@GroupAnonymousBot)
+TELEGRAM_ANONYMOUS_BOT_ID = 1087968824
+
 # Лимит таймаута капчи (минуты), 0 в БД = без лимита
 TIMEOUT_MIN_MINUTES = 1
 TIMEOUT_MAX_MINUTES = 1440  # 24 часа
@@ -26,6 +29,8 @@ TIMEOUT_MAX_MINUTES = 1440  # 24 часа
 
 async def is_chat_admin(bot: Bot, chat_id: int, user_id: int) -> bool:
     """Проверяет, является ли пользователь администратором или создателем чата."""
+    if user_id == TELEGRAM_ANONYMOUS_BOT_ID:
+        return True
     try:
         member = await bot.get_chat_member(chat_id=chat_id, user_id=user_id)
         if member.status in ['administrator', 'creator']:

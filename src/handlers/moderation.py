@@ -12,6 +12,9 @@ from aiogram.exceptions import TelegramAPIError
 logger = logging.getLogger(__name__)
 moderation_router = Router()
 
+# Системный ID, используемый Telegram для отправки сообщений от имени анонимных администраторов групп (@GroupAnonymousBot)
+TELEGRAM_ANONYMOUS_BOT_ID = 1087968824
+
 # --- ВСПОМОГАТЕЛЬНЫЕ ФУНКЦИИ ---
 
 def get_permissions(is_muted: bool) -> ChatPermissions:
@@ -26,6 +29,10 @@ def get_permissions(is_muted: bool) -> ChatPermissions:
 
 async def is_user_admin(bot: Bot, chat_id: int, user_id: int) -> bool:
     """Проверяет, является ли пользователь администратором или суперадмином бота."""
+    # 0. Проверяем, не является ли отправитель анонимным администратором чата
+    if user_id == TELEGRAM_ANONYMOUS_BOT_ID:
+        return True
+        
     # 1. Сначала проверяем суперадмина из файла переменных окружения .env
     admin_id_str = os.getenv("ADMIN_ID")
     if admin_id_str and str(user_id) == admin_id_str:
@@ -455,11 +462,46 @@ async def report_handler(message: Message, bot: Bot):
     if not message.reply_to_message:
         return
         
-    reporter = message.from_user
-    target = message.reply_to_message.from_user
+    # 1. Безопасное определение отправителя жалобы (reporter)
+    reporter_id = None
+    reporter_mention = "Анонимный отправитель"
+    is_anonymous_reporter = False
     
-    # Нельзя жаловаться на ботов или самого себя
-    if target.is_bot or reporter.id == target.id:
+    if message.from_user:
+        reporter_id = message.from_user.id
+        if reporter_id == TELEGRAM_ANONYMOUS_BOT_ID:  # ID GroupAnonymousBot
+            is_anonymous_reporter = True
+            if message.sender_chat:
+                reporter_mention = f"Анонимный администратор ({html.escape(message.sender_chat.title)})"
+            else:
+                reporter_mention = "Анонимный администратор"
+        else:
+            reporter_mention = f"{message.from_user.mention_html()} (ID: <code>{reporter_id}</code>)"
+    elif message.sender_chat:
+        is_anonymous_reporter = True
+        reporter_id = message.sender_chat.id
+        reporter_mention = f"Канал/Чат: {html.escape(message.sender_chat.title)} (ID: <code>{reporter_id}</code>)"
+
+    # 2. Безопасное определение нарушителя (target)
+    target_id = None
+    target_mention = "Анонимный пользователь"
+    target_is_bot = False
+    
+    if message.reply_to_message.from_user:
+        target_id = message.reply_to_message.from_user.id
+        target_mention = f"{message.reply_to_message.from_user.mention_html()} (ID: <code>{target_id}</code>)"
+        target_is_bot = message.reply_to_message.from_user.is_bot
+    elif message.reply_to_message.sender_chat:
+        target_id = message.reply_to_message.sender_chat.id
+        target_mention = f"Канал/Чат: {html.escape(message.reply_to_message.sender_chat.title)} (ID: <code>{target_id}</code>)"
+
+    # 3. Фильтрация недопустимых жалоб
+    # Нельзя жаловаться на ботов
+    if target_is_bot:
+        return
+        
+    # Нельзя жаловаться на самого себя (если ID известны и совпадают)
+    if reporter_id and target_id and reporter_id == target_id:
         return
         
     chat_id = message.chat.id
@@ -478,23 +520,26 @@ async def report_handler(message: Message, bot: Bot):
     if len(target_text) > 300:
         target_text = target_text[:300] + "..."
         
-    # Получаем список администраторов из БД
-    from database import get_chat_admins, create_report, add_report_message
+    # 4. Обновляем и получаем список администраторов
+    from database import get_chat_admins, create_report, add_report_message, set_chat_admins
+    
+    admin_ids = []
     try:
-        admin_ids = await get_chat_admins(chat_id)
-    except Exception as e:
-        logger.error(f"Не удалось получить список админов чата из БД: {e}")
-        admin_ids = []
-        
-    # Если БД пуста, запрашиваем API
-    if not admin_ids:
+        # Пытаемся получить свежий список из API Telegram
+        admins = await bot.get_chat_administrators(chat_id)
+        admin_ids = [admin.user.id for admin in admins if not admin.user.is_bot]
+        # Сохраняем в БД для синхронизации
+        await set_chat_admins(chat_id, admin_ids)
+        logger.info(f"Синхронизировано {len(admin_ids)} администраторов при жалобе в чате {chat_id}")
+    except TelegramAPIError as e:
+        logger.error(f"Не удалось получить список админов через API: {e}. Используем данные из БД.")
         try:
-            admins = await bot.get_chat_administrators(chat_id)
-            admin_ids = [admin.user.id for admin in admins if not admin.user.is_bot]
-        except TelegramAPIError:
-            pass
+            admin_ids = await get_chat_admins(chat_id)
+        except Exception as db_err:
+            logger.error(f"Не удалось получить админов из БД: {db_err}")
             
     if not admin_ids:
+        logger.warning(f"Список администраторов для чата {chat_id} пуст. Некуда отправлять жалобу.")
         return
         
     # Удаляем саму жалобу из общего чата для чистоты
@@ -511,13 +556,13 @@ async def report_handler(message: Message, bot: Bot):
     admin_text = (
         f"🚨 <b>Жалоба на сообщение!</b>\n\n"
         f"<b>Группа:</b> {html.escape(chat_title)} (ID: <code>{chat_id}</code>)\n"
-        f"<b>Отправитель:</b> {reporter.mention_html()} (ID: <code>{reporter.id}</code>)\n"
-        f"<b>Нарушитель:</b> {target.mention_html()} (ID: <code>{target.id}</code>)\n\n"
+        f"<b>Отправитель:</b> {reporter_mention}\n"
+        f"<b>Нарушитель:</b> {target_mention}\n\n"
         f"<b>Сообщение:</b>\n<blockquote>{html.escape(target_text)}</blockquote>"
     )
     
     try:
-        report_id = await create_report(chat_id, target.id, message_id, admin_text)
+        report_id = await create_report(chat_id, target_id if target_id else 0, message_id, admin_text)
     except Exception as e:
         logger.error(f"Не удалось создать отчет в БД: {e}")
         report_id = f"{chat_id}:{message_id}"
@@ -541,9 +586,10 @@ async def report_handler(message: Message, bot: Bot):
     markup = InlineKeyboardMarkup(inline_keyboard=buttons)
     
     # Рассылаем карточки всем админам
+    sent_count = 0
     for admin_id in admin_ids:
-        if admin_id == reporter.id:
-            # Не шлем жалобу самому себе, если админ пожаловался
+        # Не шлем жалобу самому себе, если админ пожаловался не анонимно
+        if reporter_id and admin_id == reporter_id and not is_anonymous_reporter:
             continue
         try:
             sent_msg = await bot.send_message(
@@ -552,13 +598,16 @@ async def report_handler(message: Message, bot: Bot):
                 reply_markup=markup,
                 parse_mode="HTML"
             )
+            sent_count += 1
             try:
                 await add_report_message(report_id, admin_id, sent_msg.message_id)
             except Exception as e:
                 logger.error(f"Не удалось сохранить report_message в БД: {e}")
-        except TelegramAPIError:
-            # Админ не запустил бота в ЛС
-            pass
+        except TelegramAPIError as e:
+            logger.warning(f"Не удалось отправить жалобу администратору {admin_id} в ЛС (возможно, бот не запущен): {e}")
+            
+    if sent_count == 0:
+        logger.error(f"Жалоба в чате {chat_id} не была доставлена ни одному администратору.")
 
 
 # --- ОБРАБОТЧИКИ КНОПОК БЫСТРОЙ МОДЕРАЦИИ ИЗ ЛС ---
