@@ -432,6 +432,16 @@ async def mute_command(message: Message, bot: Bot, command: CommandObject):
             f"📝 Причина: {html.escape(reason)}",
             parse_mode="HTML"
         )
+        asyncio.create_task(delete_message_after_delay(info_msg, 10))
+        
+    except TelegramAPIError as e:
+        logger.error(f"Ошибка мьюта пользователя {target_user_id}: {e}")
+        await message.answer(f"⚠️ Не удалось ограничить пользователя: {e}")
+
+    try:
+        await message.delete()
+    except TelegramAPIError:
+        pass
 
 @moderation_router.message(
     F.chat.type.in_(["group", "supergroup"]),
