@@ -75,9 +75,17 @@ async def delete_message_after_delay(msg: Message, delay: int):
     except TelegramAPIError:
         pass
 
+def has_links(message: Message) -> bool:
+    """Проверяет, содержит ли сообщение ссылки."""
+    entities = message.entities or message.caption_entities or []
+    for entity in entities:
+        if entity.type in ["url", "text_link"]:
+            return True
+    return False
+
 # --- АНТИСПАМ ССЫЛОК ---
 
-@moderation_router.message(F.chat.type.in_(["group", "supergroup"]))
+@moderation_router.message(F.chat.type.in_(["group", "supergroup"]), has_links)
 async def anti_link_handler(message: Message, bot: Bot):
     """Отслеживает отправку ссылок в группе и блокирует их (кроме Google Maps)."""
     # Игнорируем системные сообщения, сообщения без текста или медиа-подписей
