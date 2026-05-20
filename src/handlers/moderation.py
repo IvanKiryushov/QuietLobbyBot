@@ -43,10 +43,11 @@ async def is_user_admin(bot: Bot, chat_id: int, user_id: int) -> bool:
     # 3. Резервный запрос в Telegram API (для актуальности прав)
     try:
         member = await bot.get_chat_member(chat_id=chat_id, user_id=user_id)
-        if member.status in ['administrator', 'creator']:
+        status_str = str(member.status).split('.')[-1].lower()
+        if status_str in ['administrator', 'creator', 'owner']:
             return True
-    except TelegramAPIError:
-        pass
+    except TelegramAPIError as e:
+        logger.error(f"Ошибка get_chat_member для {user_id} в {chat_id}: {e}")
         
     return False
 
@@ -573,10 +574,15 @@ async def handle_report_ban(callback: CallbackQuery, bot: Bot):
         except TelegramAPIError:
             pass
             
+        # Клавиатура с кнопкой быстрого разбана
+        markup = InlineKeyboardMarkup(inline_keyboard=[
+            [InlineKeyboardButton(text="🔓 Разбанить", callback_data=f"rep_unban:{chat_id}:{target_user_id}")]
+        ])
+            
         # Обновляем карточку жалобы в ЛС админа
         await callback.message.edit_text(
             text=f"{callback.message.html_text}\n\n✅ <b>Выполнен бан нарушителя</b> администратором {callback.from_user.mention_html()}.",
-            reply_markup=None,
+            reply_markup=markup,
             parse_mode="HTML"
         )
         await callback.answer("Пользователь забанен, сообщение удалено.")
@@ -611,15 +617,72 @@ async def handle_report_mute(callback: CallbackQuery, bot: Bot):
         except TelegramAPIError:
             pass
             
+        # Клавиатура с кнопкой быстрого размута
+        markup = InlineKeyboardMarkup(inline_keyboard=[
+            [InlineKeyboardButton(text="🔊 Размьютить", callback_data=f"rep_unmute:{chat_id}:{target_user_id}")]
+        ])
+            
         await callback.message.edit_text(
             text=f"{callback.message.html_text}\n\n✅ <b>Выполнен мьют нарушителя</b> администратором {callback.from_user.mention_html()}.",
-            reply_markup=None,
+            reply_markup=markup,
             parse_mode="HTML"
         )
         await callback.answer("Права пользователя ограничены, сообщение удалено.")
     except TelegramAPIError as e:
         logger.error(f"Не удалось выполнить мьют через репорт: {e}")
         await callback.answer(f"Ошибка выполнения: {e}", show_alert=True)
+
+
+@moderation_router.callback_query(F.data.startswith("rep_unban:"))
+async def handle_report_unban(callback: CallbackQuery, bot: Bot):
+    """Обрабатывает кнопку «Разбанить» в карточке жалобы."""
+    parts = callback.data.split(":")
+    chat_id = int(parts[1])
+    target_user_id = int(parts[2])
+    
+    if not await is_user_admin(bot, chat_id, callback.from_user.id):
+        await callback.answer("У вас нет прав администратора в этой группе!", show_alert=True)
+        return
+        
+    try:
+        await bot.unban_chat_member(chat_id=chat_id, user_id=target_user_id, only_if_banned=True)
+        await callback.message.edit_text(
+            text=f"{callback.message.html_text}\n\n🔊 <b>Пользователь разблокирован</b> администратором {callback.from_user.mention_html()}.",
+            reply_markup=None,
+            parse_mode="HTML"
+        )
+        await callback.answer("Пользователь разбанен.")
+    except TelegramAPIError as e:
+        logger.error(f"Не удалось выполнить разбан через репорт: {e}")
+        await callback.answer(f"Ошибка разбана: {e}", show_alert=True)
+
+
+@moderation_router.callback_query(F.data.startswith("rep_unmute:"))
+async def handle_report_unmute(callback: CallbackQuery, bot: Bot):
+    """Обрабатывает кнопку «Размьютить» в карточке жалобы."""
+    parts = callback.data.split(":")
+    chat_id = int(parts[1])
+    target_user_id = int(parts[2])
+    
+    if not await is_user_admin(bot, chat_id, callback.from_user.id):
+        await callback.answer("У вас нет прав администратора в этой группе!", show_alert=True)
+        return
+        
+    try:
+        await bot.restrict_chat_member(
+            chat_id=chat_id,
+            user_id=target_user_id,
+            permissions=get_permissions(is_muted=False)
+        )
+        await callback.message.edit_text(
+            text=f"{callback.message.html_text}\n\n🔊 <b>Ограничения отправки сообщений сняты</b> администратором {callback.from_user.mention_html()}.",
+            reply_markup=None,
+            parse_mode="HTML"
+        )
+        await callback.answer("Пользователь размьючен.")
+    except TelegramAPIError as e:
+        logger.error(f"Не удалось выполнить размьют через репорт: {e}")
+        await callback.answer(f"Ошибка размута: {e}", show_alert=True)
 
 
 @moderation_router.callback_query(F.data.startswith("rep_del:"))
