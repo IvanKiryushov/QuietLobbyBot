@@ -64,7 +64,13 @@ async def set_bot_descriptions(bot: Bot):
 
 async def set_bot_commands(bot: Bot):
     """Устанавливает подсказки команд для разных областей (scopes)."""
-    from aiogram.types import BotCommand, BotCommandScopeAllPrivateChats, BotCommandScopeAllGroupChats, BotCommandScopeChat
+    from aiogram.types import (
+        BotCommand,
+        BotCommandScopeAllPrivateChats,
+        BotCommandScopeAllGroupChats,
+        BotCommandScopeChat,
+        BotCommandScopeAllChatAdministrators
+    )
     
     # 1. Команды в личных сообщениях (для всех пользователей)
     commands_private = [
@@ -97,9 +103,10 @@ async def set_bot_commands(bot: Bot):
         except Exception as e:
             logger.error(f"Не удалось установить команды для суперадмина: {e}")
 
-    # 3. Команды в группах (для вызова настройки)
+    # 3. Команды в группах для обычных пользователей (вызов настроек и жалоба)
     commands_groups = [
-        BotCommand(command="settings", description="Получить ссылку на настройки в ЛС")
+        BotCommand(command="settings", description="Получить ссылку на настройки в ЛС"),
+        BotCommand(command="report", description="Пожаловаться на сообщение (reply)")
     ]
     try:
         await bot.set_my_commands(
@@ -109,6 +116,24 @@ async def set_bot_commands(bot: Bot):
         logger.info("Установлены подсказки команд для групп.")
     except Exception as e:
         logger.error(f"Не удалось установить команды для групп: {e}")
+
+    # 4. Команды в группах для администраторов (настройки, жалоба и модерация)
+    commands_admins_group = [
+        BotCommand(command="settings", description="Получить ссылку на настройки в ЛС"),
+        BotCommand(command="report", description="Пожаловаться на сообщение (reply)"),
+        BotCommand(command="ban", description="Забанить пользователя (reply / ID)"),
+        BotCommand(command="unban", description="Разбанить пользователя (reply / ID)"),
+        BotCommand(command="mute", description="Заглушить пользователя (reply / время)"),
+        BotCommand(command="unmute", description="Размутить пользователя (reply / ID)")
+    ]
+    try:
+        await bot.set_my_commands(
+            commands=commands_admins_group,
+            scope=BotCommandScopeAllChatAdministrators()
+        )
+        logger.info("Установлены подсказки команд для администраторов групп.")
+    except Exception as e:
+        logger.error(f"Не удалось установить команды для администраторов групп: {e}")
 
 
 async def sync_all_chats_admins(bot: Bot):
