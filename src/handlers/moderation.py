@@ -58,6 +58,38 @@ async def is_user_admin(bot: Bot, chat_id: int, user_id: int) -> bool:
         
     return False
 
+def format_telegram_error(e: TelegramAPIError) -> str:
+    """Форматирует ошибку TelegramAPIError в понятный пользователю текст на русском языке."""
+    err_msg = str(e).lower()
+    if "can't restrict self" in err_msg:
+        return "у бота нет прав на ограничение самого себя"
+    elif "user is an administrator" in err_msg:
+        return "пользователь является администратором чата"
+    elif "not enough rights" in err_msg:
+        return "у бота недостаточно прав в этом чате"
+    elif "chat not found" in err_msg:
+        return "чат не найден"
+    elif "user not found" in err_msg:
+        return "пользователь не найден"
+    elif "can't demote chat creator" in err_msg:
+        return "нельзя понизить создателя чата"
+    return str(e)
+
+async def send_error_to_admin_dm(bot: Bot, message: Message, action_desc: str, error_text: str):
+    """Отправляет сообщение об ошибке модерации администратору в личные сообщения."""
+    user_id = message.from_user.id if message.from_user else None
+    if not user_id:
+        return
+    chat_title = message.chat.title or "группе"
+    try:
+        await bot.send_message(
+            chat_id=user_id,
+            text=f"⚠️ Не удалось {action_desc} в чате <b>{html.escape(chat_title)}</b>: {error_text}",
+            parse_mode="HTML"
+        )
+    except TelegramAPIError as e:
+        logger.warning(f"Не удалось отправить уведомление об ошибке админу {user_id} в ЛС: {e}")
+
 def is_google_maps_link(url: str) -> bool:
     """Проверяет, является ли ссылка вариацией Google Maps."""
     url_lower = url.lower()
@@ -277,7 +309,7 @@ async def ban_command(message: Message, bot: Bot, command: CommandObject):
         
     except TelegramAPIError as e:
         logger.error(f"Ошибка бана пользователя {target_user_id}: {e}")
-        await message.answer(f"⚠️ Не удалось заблокировать пользователя: {e}")
+        await send_error_to_admin_dm(bot, message, "заблокировать пользователя", format_telegram_error(e))
 
     # Удаляем само сообщение с командой /ban
     try:
@@ -324,7 +356,7 @@ async def unban_command(message: Message, bot: Bot, command: CommandObject):
         asyncio.create_task(delete_message_after_delay(info_msg, 10))
     except TelegramAPIError as e:
         logger.error(f"Ошибка разбана пользователя {target_user_id}: {e}")
-        await message.answer(f"⚠️ Не удалось разблокировать пользователя: {e}")
+        await send_error_to_admin_dm(bot, message, "разблокировать пользователя", format_telegram_error(e))
 
     try:
         await message.delete()
@@ -397,6 +429,15 @@ async def mute_command(message: Message, bot: Bot, command: CommandObject):
             pass
         return
 
+    if target_user_id == bot.id:
+        msg = await message.answer("⚠️ Нельзя ограничить самого бота.")
+        asyncio.create_task(delete_message_after_delay(msg, 10))
+        try:
+            await message.delete()
+        except TelegramAPIError:
+            pass
+        return
+
     if await is_user_admin(bot, message.chat.id, target_user_id):
         msg = await message.answer("⚠️ Нельзя ограничить администратора чата.")
         asyncio.create_task(delete_message_after_delay(msg, 10))
@@ -443,7 +484,7 @@ async def mute_command(message: Message, bot: Bot, command: CommandObject):
         
     except TelegramAPIError as e:
         logger.error(f"Ошибка мьюта пользователя {target_user_id}: {e}")
-        await message.answer(f"⚠️ Не удалось ограничить пользователя: {e}")
+        await send_error_to_admin_dm(bot, message, "ограничить пользователя", format_telegram_error(e))
 
     try:
         await message.delete()
@@ -480,6 +521,24 @@ async def unmute_command(message: Message, bot: Bot, command: CommandObject):
             pass
         return
 
+    if target_user_id == bot.id:
+        msg = await message.answer("⚠️ Нельзя размьютить самого бота (у него нет ограничений).")
+        asyncio.create_task(delete_message_after_delay(msg, 10))
+        try:
+            await message.delete()
+        except TelegramAPIError:
+            pass
+        return
+
+    if await is_user_admin(bot, message.chat.id, target_user_id):
+        msg = await message.answer("⚠️ Нельзя размьютить администратора чата (у него нет ограничений).")
+        asyncio.create_task(delete_message_after_delay(msg, 10))
+        try:
+            await message.delete()
+        except TelegramAPIError:
+            pass
+        return
+
     try:
         # Снимаем ограничения в Telegram
         await bot.restrict_chat_member(
@@ -503,7 +562,7 @@ async def unmute_command(message: Message, bot: Bot, command: CommandObject):
         
     except TelegramAPIError as e:
         logger.error(f"Ошибка размута пользователя {target_user_id}: {e}")
-        await message.answer(f"⚠️ Не удалось разблокировать пользователя: {e}")
+        await send_error_to_admin_dm(bot, message, "разблокировать пользователя", format_telegram_error(e))
 
     try:
         await message.delete()
@@ -728,7 +787,7 @@ async def handle_report_ban(callback: CallbackQuery, bot: Bot):
         asyncio.create_task(sync_report_messages(bot, report_id, 'banned', callback.from_user.mention_html()))
     except TelegramAPIError as e:
         logger.error(f"Не удалось выполнить бан через репорт: {e}")
-        await callback.answer(f"Ошибка выполнения: {e}", show_alert=True)
+        await callback.answer(f"Ошибка выполнения: {format_telegram_error(e)}", show_alert=True)
 
 
 @moderation_router.callback_query(F.data.startswith("rep_mute:"))
@@ -792,7 +851,7 @@ async def handle_report_mute(callback: CallbackQuery, bot: Bot):
         asyncio.create_task(sync_report_messages(bot, report_id, 'muted', callback.from_user.mention_html()))
     except TelegramAPIError as e:
         logger.error(f"Не удалось выполнить мьют через репорт: {e}")
-        await callback.answer(f"Ошибка выполнения: {e}", show_alert=True)
+        await callback.answer(f"Ошибка выполнения: {format_telegram_error(e)}", show_alert=True)
 
 
 @moderation_router.callback_query(F.data.startswith("rep_unban:"))
@@ -821,7 +880,7 @@ async def handle_report_unban(callback: CallbackQuery, bot: Bot):
         asyncio.create_task(sync_report_messages(bot, report_id, 'unbanned', callback.from_user.mention_html()))
     except TelegramAPIError as e:
         logger.error(f"Не удалось выполнить разбан через репорт: {e}")
-        await callback.answer(f"Ошибка разбана: {e}", show_alert=True)
+        await callback.answer(f"Ошибка разбана: {format_telegram_error(e)}", show_alert=True)
 
 
 @moderation_router.callback_query(F.data.startswith("rep_unmute:"))
@@ -854,7 +913,7 @@ async def handle_report_unmute(callback: CallbackQuery, bot: Bot):
         asyncio.create_task(sync_report_messages(bot, report_id, 'unmuted', callback.from_user.mention_html()))
     except TelegramAPIError as e:
         logger.error(f"Не удалось выполнить размьют через репорт: {e}")
-        await callback.answer(f"Ошибка размута: {e}", show_alert=True)
+        await callback.answer(f"Ошибка размута: {format_telegram_error(e)}", show_alert=True)
 
 
 @moderation_router.callback_query(F.data.startswith("rep_del:"))

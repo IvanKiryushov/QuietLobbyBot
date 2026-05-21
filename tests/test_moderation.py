@@ -25,8 +25,8 @@ async def setup_db():
 @pytest.mark.asyncio
 @patch('handlers.moderation.is_user_admin')
 async def test_unmute_command_by_reply(mock_is_admin):
-    # Настраиваем мок админа (отправитель команды - админ)
-    mock_is_admin.return_value = True
+    # Настраиваем мок админа: отправитель (123) является админом, а цель (999) - нет
+    mock_is_admin.side_effect = lambda bot, chat_id, user_id: user_id == 123
 
     # Инициализируем БД данными предупреждений для пользователя
     chat_id = -100111
@@ -39,6 +39,7 @@ async def test_unmute_command_by_reply(mock_is_admin):
 
     # Создаем мок Bot
     bot = AsyncMock()
+    bot.id = 55555
     
     # Создаем мок сообщения с reply
     message = AsyncMock()
@@ -78,7 +79,8 @@ async def test_unmute_command_by_reply(mock_is_admin):
 @pytest.mark.asyncio
 @patch('handlers.moderation.is_user_admin')
 async def test_unmute_command_by_id(mock_is_admin):
-    mock_is_admin.return_value = True
+    # Настраиваем мок админа: отправитель (123) является админом, а цель (888) - нет
+    mock_is_admin.side_effect = lambda bot, chat_id, user_id: user_id == 123
 
     chat_id = -100111
     target_user_id = 888
@@ -88,6 +90,8 @@ async def test_unmute_command_by_id(mock_is_admin):
     assert await database.get_user_warnings(chat_id, target_user_id) == 1
 
     bot = AsyncMock()
+    
+    bot.id = 55555
     
     message = AsyncMock()
     message.chat.id = chat_id
@@ -109,3 +113,110 @@ async def test_unmute_command_by_id(mock_is_admin):
 
     # Проверяем сброс предупреждений
     assert await database.get_user_warnings(chat_id, target_user_id) == 0
+
+
+@pytest.mark.asyncio
+@patch('handlers.moderation.is_user_admin')
+async def test_unmute_target_is_admin(mock_is_admin):
+    # Настраиваем мок админа: и отправитель (123) является админом, и цель (777) - админ
+    mock_is_admin.side_effect = lambda bot, chat_id, user_id: user_id in [123, 777]
+
+    chat_id = -100111
+    target_user_id = 777
+    
+    bot = AsyncMock()
+    bot.id = 55555
+    
+    message = AsyncMock()
+    message.chat.id = chat_id
+    message.from_user.id = 123
+    message.reply_to_message = None
+    
+    command = MagicMock()
+    command.args = "777"
+
+    # Вызываем команду
+    with patch('database.DB_PATH', TEST_DB_PATH):
+        await unmute_command(message, bot, command)
+
+    # Проверяем, что restrict_chat_member НЕ был вызван
+    bot.restrict_chat_member.assert_not_called()
+
+    # Проверяем, что бот выдал сообщение об ограничении
+    message.answer.assert_called_once()
+    assert "Нельзя размьютить администратора" in message.answer.call_args[0][0]
+
+
+@pytest.mark.asyncio
+@patch('handlers.moderation.is_user_admin')
+async def test_unmute_target_is_bot(mock_is_admin):
+    # Настраиваем мок админа: отправитель (123) является админом, бот (55555) не админ
+    mock_is_admin.side_effect = lambda bot, chat_id, user_id: user_id == 123
+
+    chat_id = -100111
+    
+    bot = AsyncMock()
+    bot.id = 55555
+    
+    message = AsyncMock()
+    message.chat.id = chat_id
+    message.from_user.id = 123
+    message.reply_to_message = None
+    
+    command = MagicMock()
+    command.args = "55555"  # ID бота
+
+    # Вызываем команду
+    with patch('database.DB_PATH', TEST_DB_PATH):
+        await unmute_command(message, bot, command)
+
+    # Проверяем, что restrict_chat_member НЕ был вызван
+    bot.restrict_chat_member.assert_not_called()
+
+    # Проверяем, что бот выдал сообщение
+    message.answer.assert_called_once()
+    assert "Нельзя размьютить самого бота" in message.answer.call_args[0][0]
+
+
+@pytest.mark.asyncio
+@patch('handlers.moderation.is_user_admin')
+async def test_unmute_command_telegram_error(mock_is_admin):
+    from aiogram.exceptions import TelegramAPIError
+
+    mock_is_admin.side_effect = lambda bot, chat_id, user_id: user_id == 123
+
+    chat_id = -100111
+    target_user_id = 999
+    
+    bot = AsyncMock()
+    bot.id = 55555
+    # Имитируем ошибку Telegram API
+    api_error = TelegramAPIError(method=None, message="Bad Request: can't restrict self")
+    bot.restrict_chat_member.side_effect = api_error
+
+    message = AsyncMock()
+    message.chat.id = chat_id
+    message.chat.title = "Тестовый чат"
+    message.from_user.id = 123
+    message.reply_to_message = None
+    
+    command = MagicMock()
+    command.args = "999"
+
+    with patch('database.DB_PATH', TEST_DB_PATH):
+        await unmute_command(message, bot, command)
+
+    # Проверяем, что restrict_chat_member был вызван
+    bot.restrict_chat_member.assert_called_once()
+    
+    # Проверяем, что в общий чат ничего не отправлялось
+    message.answer.assert_not_called()
+    
+    # Проверяем, что админу в ЛС ушло сообщение об ошибке
+    bot.send_message.assert_called_once()
+    call_args = bot.send_message.call_args[1]
+    assert call_args['chat_id'] == 123
+    assert "Не удалось разблокировать пользователя" in call_args['text']
+    assert "у бота нет прав на ограничение самого себя" in call_args['text']
+
+
