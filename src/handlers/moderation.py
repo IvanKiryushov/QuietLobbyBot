@@ -450,6 +450,67 @@ async def mute_command(message: Message, bot: Bot, command: CommandObject):
     except TelegramAPIError:
         pass
 
+
+@moderation_router.message(Command(commands=["unmute"]), F.chat.type.in_(["group", "supergroup"]))
+async def unmute_command(message: Message, bot: Bot, command: CommandObject):
+    """Команда /unmute. Снимает ограничения с пользователя и сбрасывает предупреждения (по reply или ID)."""
+    if not await is_user_admin(bot, message.chat.id, message.from_user.id):
+        return
+
+    target_user_id = None
+
+    if message.reply_to_message:
+        target_user_id = message.reply_to_message.from_user.id
+    elif command.args:
+        try:
+            target_user_id = int(command.args.split()[0])
+        except ValueError:
+            pass
+
+    if not target_user_id:
+        msg = await message.answer(
+            "⚠️ Использование: напишите <code>/unmute</code> в ответ на сообщение пользователя\n"
+            "или <code>/unmute ID_пользователя</code>.",
+            parse_mode="HTML"
+        )
+        asyncio.create_task(delete_message_after_delay(msg, 10))
+        try:
+            await message.delete()
+        except TelegramAPIError:
+            pass
+        return
+
+    try:
+        # Снимаем ограничения в Telegram
+        await bot.restrict_chat_member(
+            chat_id=message.chat.id,
+            user_id=target_user_id,
+            permissions=get_permissions(is_muted=False)
+        )
+        
+        # Сбрасываем предупреждения за мат
+        from database import reset_user_warnings
+        await reset_user_warnings(message.chat.id, target_user_id)
+        
+        logger.info(f"[MODERATION] Админ {message.from_user.id} размьютил {target_user_id} в {message.chat.id} и сбросил предупреждения.")
+        
+        target_mention = message.reply_to_message.from_user.mention_html() if (message.reply_to_message and message.reply_to_message.from_user) else f"<code>{target_user_id}</code>"
+        info_msg = await message.answer(
+            f"🔊 Пользователь {target_mention} разблокирован (размьючен). Предупреждения за мат сброшены.",
+            parse_mode="HTML"
+        )
+        asyncio.create_task(delete_message_after_delay(info_msg, 10))
+        
+    except TelegramAPIError as e:
+        logger.error(f"Ошибка размута пользователя {target_user_id}: {e}")
+        await message.answer(f"⚠️ Не удалось разблокировать пользователя: {e}")
+
+    try:
+        await message.delete()
+    except TelegramAPIError:
+        pass
+
+
 @moderation_router.message(
     F.chat.type.in_(["group", "supergroup"]),
     (F.text.startswith("/report") | F.text.contains("@admin"))
