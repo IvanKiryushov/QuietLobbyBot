@@ -65,6 +65,8 @@ def generate_settings_keyboard(chat_id: int, settings: dict, show_back: bool = F
     timeout_mins = settings.get('verification_timeout', 0)
     if timeout_mins is None:
         timeout_mins = 0
+    anti_swear_enabled = settings.get('anti_swear_enabled', 0)
+    max_swear_warnings = settings.get('max_swear_warnings', 3)
     
     lang_text = f"Язык: {'🇷🇺 RU' if lang == 'ru' else '🇻🇳 VI' if lang == 'vi' else '🇬🇧 EN'}"
     strictness_texts = {
@@ -77,6 +79,9 @@ def generate_settings_keyboard(chat_id: int, settings: dict, show_back: bool = F
     welcome_text = "👋 Приветствие: Настроено" if welcome else "👋 Приветствие: Выкл"
     timeout_text = "⏳ Таймаут: Без лимита" if timeout_mins == 0 else f"⏳ Таймаут: {timeout_mins} мин"
     
+    anti_swear_text = "🤬 Антимат: 🟢 Вкл" if anti_swear_enabled else "🤬 Антимат: 🔴 Выкл"
+    warnings_text = f"⚠️ Лимит предупреждений: {max_swear_warnings}"
+    
     back_button = InlineKeyboardButton(text="⬅️ К списку групп", callback_data="adm_back") if show_back else InlineKeyboardButton(text="Закрыть", callback_data="set_close")
     
     buttons = [
@@ -84,6 +89,8 @@ def generate_settings_keyboard(chat_id: int, settings: dict, show_back: bool = F
         [InlineKeyboardButton(text=strictness_text, callback_data=f"strict_menu:{chat_id}")],
         [InlineKeyboardButton(text=welcome_text, callback_data=f"set_welcome:{chat_id}")],
         [InlineKeyboardButton(text=timeout_text, callback_data=f"timeout_start:{chat_id}")],
+        [InlineKeyboardButton(text=anti_swear_text, callback_data=f"set_antiswear:{chat_id}")],
+        [InlineKeyboardButton(text=warnings_text, callback_data=f"cycle_warnings:{chat_id}")],
         [back_button]
     ]
     return InlineKeyboardMarkup(inline_keyboard=buttons)
@@ -552,6 +559,64 @@ async def process_timeout_input(message: Message, state: FSMContext, bot: Bot):
 async def process_timeout_confirm_guard(message: Message, bot: Bot):
     """В фазе подтверждения текст не принимаем — только кнопки."""
     await message.answer("Сейчас нужно нажать «Сохранить» или «Отменить» под сообщением с настройкой.")
+
+@admin_router.callback_query(F.data == "timeout_cancel")
+async def cancel_timeout_callback(callback: CallbackQuery, state: FSMContext):
+    await state.clear()
+    await callback.message.edit_text("❌ Изменение таймаута отменено.")
+    await callback.answer()
+
+# --- ОБРАБОТЧИКИ АНТИМАТА ---
+
+@admin_router.callback_query(F.data.startswith("set_antiswear:"))
+async def toggle_antiswear_callback(callback: CallbackQuery, bot: Bot):
+    _, chat_id_str = callback.data.split(":")
+    chat_id = int(chat_id_str)
+    
+    if not await is_chat_admin(bot, chat_id, callback.from_user.id):
+        await callback.answer("У вас нет прав!", show_alert=True)
+        return
+        
+    settings = await get_chat_settings(chat_id)
+    current_state = settings.get('anti_swear_enabled', 0)
+    new_state = 0 if current_state else 1
+    
+    await update_chat_setting(chat_id, 'anti_swear_enabled', new_state)
+    logger.info(f"Админ {callback.from_user.id} изменил антимат в чате {chat_id} на {new_state}")
+    
+    settings['anti_swear_enabled'] = new_state
+    markup = generate_settings_keyboard(chat_id, settings, show_back=True)
+    try:
+        await callback.message.edit_reply_markup(reply_markup=markup)
+    except TelegramAPIError:
+        pass
+    await callback.answer(f"Антимат {'включен' if new_state else 'выключен'}")
+
+@admin_router.callback_query(F.data.startswith("cycle_warnings:"))
+async def cycle_warnings_callback(callback: CallbackQuery, bot: Bot):
+    _, chat_id_str = callback.data.split(":")
+    chat_id = int(chat_id_str)
+    
+    if not await is_chat_admin(bot, chat_id, callback.from_user.id):
+        await callback.answer("У вас нет прав!", show_alert=True)
+        return
+        
+    settings = await get_chat_settings(chat_id)
+    current_warnings = settings.get('max_swear_warnings', 3)
+    
+    # Циклическое переключение: 1 -> 2 -> 3 -> 4 -> 5 -> 1
+    new_warnings = current_warnings + 1 if current_warnings < 5 else 1
+    
+    await update_chat_setting(chat_id, 'max_swear_warnings', new_warnings)
+    logger.info(f"Админ {callback.from_user.id} изменил лимит страйков в чате {chat_id} на {new_warnings}")
+    
+    settings['max_swear_warnings'] = new_warnings
+    markup = generate_settings_keyboard(chat_id, settings, show_back=True)
+    try:
+        await callback.message.edit_reply_markup(reply_markup=markup)
+    except TelegramAPIError:
+        pass
+    await callback.answer(f"Лимит предупреждений изменен на {new_warnings}")
 
 @admin_router.callback_query(F.data == "set_close")
 async def close_settings_callback(callback: CallbackQuery, state: FSMContext):

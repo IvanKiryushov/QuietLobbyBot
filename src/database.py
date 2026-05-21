@@ -37,6 +37,27 @@ async def init_db():
         except aiosqlite.OperationalError:
             pass  # Колонка уже создана
 
+        # Безопасная миграция: антимат и лимит предупреждений
+        try:
+            await db.execute("ALTER TABLE chat_settings ADD COLUMN anti_swear_enabled BOOLEAN DEFAULT 0")
+        except aiosqlite.OperationalError:
+            pass
+            
+        try:
+            await db.execute("ALTER TABLE chat_settings ADD COLUMN max_swear_warnings INTEGER DEFAULT 3")
+        except aiosqlite.OperationalError:
+            pass
+
+        # Таблица предупреждений пользователей за маты
+        await db.execute('''
+            CREATE TABLE IF NOT EXISTS user_warnings (
+                chat_id INTEGER,
+                user_id INTEGER,
+                warn_count INTEGER DEFAULT 0,
+                PRIMARY KEY (chat_id, user_id)
+            )
+        ''')
+
         # Таблица администраторов групп для stateless-доступа в ЛС
         await db.execute('''
             CREATE TABLE IF NOT EXISTS chat_admins (
@@ -179,7 +200,7 @@ async def get_all_active_chats() -> list:
 
 async def update_chat_setting(chat_id: int, key: str, value):
     """Обновляет конкретную настройку для чата."""
-    allowed_keys = ['language', 'captcha_strictness', 'welcome_message', 'verification_timeout']
+    allowed_keys = ['language', 'captcha_strictness', 'welcome_message', 'verification_timeout', 'anti_swear_enabled', 'max_swear_warnings']
     if key not in allowed_keys:
         raise ValueError(f"Настройка {key} не разрешена.")
         
@@ -212,7 +233,7 @@ async def migrate_chat_id(old_chat_id: int, new_chat_id: int):
                 # Обновляем новый чат настройками из старого, а старый деактивируем/удаляем
                 await db.execute('''
                     UPDATE chat_settings 
-                    SET language = ?, captcha_strictness = ?, welcome_message = ?, title = ?, verification_timeout = ?, is_active = 1
+                    SET language = ?, captcha_strictness = ?, welcome_message = ?, title = ?, verification_timeout = ?, anti_swear_enabled = ?, max_swear_warnings = ?, is_active = 1
                     WHERE chat_id = ?
                 ''', (
                     old_settings['language'],
@@ -220,6 +241,8 @@ async def migrate_chat_id(old_chat_id: int, new_chat_id: int):
                     old_settings['welcome_message'],
                     old_settings['title'],
                     old_settings['verification_timeout'],
+                    old_settings.get('anti_swear_enabled', 0),
+                    old_settings.get('max_swear_warnings', 3),
                     new_chat_id
                 ))
                 await db.execute('DELETE FROM chat_settings WHERE chat_id = ?', (old_chat_id,))
@@ -463,6 +486,14 @@ async def check_and_consume_approved_join(chat_id: int, user_id: int) -> bool:
                 approved_at = approved_at_str
                 
             diff = (datetime.now() - approved_at).total_seconds()
+            
+            # Очищаем старые заявки (старше 7 дней)
+            await db.execute('''
+                DELETE FROM approved_joins 
+                WHERE approved_at < datetime('now', '-7 days')
+            ''')
+            await db.commit()
+            
             if diff < 3600:
                 await db.execute('DELETE FROM approved_joins WHERE chat_id = ? AND user_id = ?', (chat_id, user_id))
                 await db.commit()
@@ -471,3 +502,32 @@ async def check_and_consume_approved_join(chat_id: int, user_id: int) -> bool:
             await db.execute('DELETE FROM approved_joins WHERE chat_id = ? AND user_id = ?', (chat_id, user_id))
             await db.commit()
             return False
+
+# --- ФУНКЦИИ ДЛЯ СИСТЕМЫ ПРЕДУПРЕЖДЕНИЙ (АНТИМАТ) ---
+
+async def get_user_warnings(chat_id: int, user_id: int) -> int:
+    """Возвращает текущее количество предупреждений пользователя в чате."""
+    async with aiosqlite.connect(DB_PATH) as db:
+        async with db.execute('SELECT warn_count FROM user_warnings WHERE chat_id = ? AND user_id = ?', (chat_id, user_id)) as cursor:
+            row = await cursor.fetchone()
+            if row:
+                return row[0]
+            return 0
+
+async def add_user_warning(chat_id: int, user_id: int) -> int:
+    """Добавляет 1 предупреждение пользователю в чате и возвращает новое количество."""
+    async with aiosqlite.connect(DB_PATH) as db:
+        await db.execute('''
+            INSERT INTO user_warnings (chat_id, user_id, warn_count)
+            VALUES (?, ?, 1)
+            ON CONFLICT(chat_id, user_id) DO UPDATE SET warn_count = warn_count + 1
+        ''', (chat_id, user_id))
+        await db.commit()
+        
+    return await get_user_warnings(chat_id, user_id)
+
+async def reset_user_warnings(chat_id: int, user_id: int):
+    """Сбрасывает счетчик предупреждений пользователя в чате."""
+    async with aiosqlite.connect(DB_PATH) as db:
+        await db.execute('DELETE FROM user_warnings WHERE chat_id = ? AND user_id = ?', (chat_id, user_id))
+        await db.commit()

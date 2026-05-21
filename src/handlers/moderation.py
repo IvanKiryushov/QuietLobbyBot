@@ -588,9 +588,6 @@ async def report_handler(message: Message, bot: Bot):
     # Рассылаем карточки всем админам
     sent_count = 0
     for admin_id in admin_ids:
-        # Не шлем жалобу самому себе, если админ пожаловался не анонимно
-        if reporter_id and admin_id == reporter_id and not is_anonymous_reporter:
-            continue
         try:
             sent_msg = await bot.send_message(
                 chat_id=admin_id,
@@ -893,3 +890,85 @@ async def handle_report_dismiss(callback: CallbackQuery, bot: Bot):
         
     await callback.answer("Жалоба отклонена.")
     asyncio.create_task(sync_report_messages(bot, report_id, 'dismissed', callback.from_user.mention_html()))
+
+# --- АНТИМАТ ---
+
+@moderation_router.message()
+async def anti_swear_handler(message: Message, bot: Bot):
+    """Глобальный обработчик текстовых сообщений для фильтрации нецензурной лексики."""
+    if not message.text and not message.caption:
+        return
+        
+    chat_id = message.chat.id
+    if chat_id > 0:
+        return  # Не фильтруем личные сообщения
+        
+    # Ленивый импорт, чтобы не создавать циклических зависимостей
+    from database import get_chat_settings, add_user_warning, reset_user_warnings
+    from bad_words import contains_swear_words
+    
+    settings = await get_chat_settings(chat_id)
+    if not settings or not settings.get('anti_swear_enabled', 0):
+        return
+        
+    # Проверяем, есть ли мат в сообщении
+    text_to_check = message.text or message.caption
+    if not contains_swear_words(text_to_check):
+        return
+        
+    # Игнорируем администраторов (в т.ч. анонимных)
+    if message.from_user:
+        if await is_user_admin(bot, chat_id, message.from_user.id):
+            return
+            
+    # Если это сообщение от канала или анонимного админа (без from_user), и мы сюда дошли - удаляем.
+    # Но анонимные админы отсекаются выше, так как у них id = 1087968824.
+    
+    # 1. Удаляем сообщение с матом
+    try:
+        await message.delete()
+    except TelegramAPIError:
+        logger.warning(f"Не удалось удалить сообщение с матом в чате {chat_id} (нет прав?)")
+        return
+        
+    # 2. Обрабатываем страйки (только если есть конкретный пользователь)
+    if not message.from_user:
+        return
+        
+    user_id = message.from_user.id
+    user_mention = message.from_user.mention_html()
+    
+    current_warnings = await add_user_warning(chat_id, user_id)
+    max_warnings = settings.get('max_swear_warnings', 3)
+    
+    if current_warnings >= max_warnings:
+        # Лимит превышен: выдаем мьют на 24 часа и сбрасываем страйки
+        await reset_user_warnings(chat_id, user_id)
+        
+        permissions = get_permissions(is_muted=True)
+        until_date = int(time.time()) + 86400  # 24 часа
+        
+        try:
+            await bot.restrict_chat_member(
+                chat_id=chat_id,
+                user_id=user_id,
+                permissions=permissions,
+                until_date=until_date
+            )
+            await message.answer(
+                f"🛑 {user_mention} превысил лимит предупреждений за мат ({max_warnings}/{max_warnings}).\n"
+                f"Выдан мут на 24 часа.", 
+                parse_mode="HTML"
+            )
+        except TelegramAPIError as e:
+            logger.error(f"Ошибка мута нарушителя антимата {user_id}: {e}")
+    else:
+        # Просто предупреждение
+        warn_msg = await message.answer(
+            f"⚠️ {user_mention}, мат в этом чате запрещен!\n"
+            f"Предупреждение {current_warnings}/{max_warnings}.", 
+            parse_mode="HTML"
+        )
+        # Удаляем предупреждение через 10 секунд чтобы не засорять чат
+        asyncio.create_task(delete_message_after_delay(warn_msg, 10))
+
