@@ -183,7 +183,8 @@ async def handle_get_chats(message: Message, bot: Bot):
             try:
                 admins = await bot.get_chat_administrators(chat_id)
                 for admin in admins:
-                    if admin.status == "creator":
+                    status_str = str(admin.status).split('.')[-1].lower()
+                    if status_str in ["creator", "owner"]:
                         user = admin.user
                         creator_name = user.first_name
                         if user.last_name:

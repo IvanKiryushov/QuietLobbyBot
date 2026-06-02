@@ -28,7 +28,15 @@ TRANSLATIONS = {
         "btn_return": "Вернуться в чат",
         "too_slow": "Время вышло! Ты не успел пройти проверку вовремя и был удален из чата.",
         "admin_verification_info": "ℹ️ Ты являешься администратором этого чата. Ссылка предназначена для проверки новых участников.",
-        "not_your_verification": "Эта проверка предназначена для другого пользователя (или время верификации истекло)."
+        "not_your_verification": "Эта проверка предназначена для другого пользователя (или время верификации истекло).",
+        "soft_mute_warn": "\n\n⚠️ <b>Твое сообщение сохранено.</b> Пройди верификацию в ЛС, чтобы получить его.",
+        "soft_mute_retrieve": "Ваше сохраненное сообщение:",
+        "bot_greeting": "👋 Привет! Я QuietLobbyBot — бот-модератор.\nЯ помогаю защищать публичные группы от спамеров.\n\n⚙️ <b>Разработка и автоматизация ботов:</b> @bimivan",
+        "cb_success": "Успешно!",
+        "cb_wrong": "Неверно!",
+        "cb_error": "Произошла ошибка, попробуйте еще раз.",
+        "cb_keyboard_error": "Ошибка клавиатуры",
+        "invalid_verify_link": "Неверный формат ссылки верификации."
     },
     "en": {
         "greet": "Hello, {name}!\n\nYou are joining <b>{chat_name}</b>.\n\nTo prevent spam, please select the <b>{target_word}</b> from the buttons below:",
@@ -42,7 +50,15 @@ TRANSLATIONS = {
         "btn_return": "Return to Chat",
         "too_slow": "Time is up! You failed to verify in time and were removed from the group.",
         "admin_verification_info": "ℹ️ You are an administrator of this chat. This link is for new members verification.",
-        "not_your_verification": "This verification is for another user (or verification time has expired)."
+        "not_your_verification": "This verification is for another user (or verification time has expired).",
+        "soft_mute_warn": "\n\n⚠️ <b>Your message has been saved.</b> Verify in PM to retrieve it.",
+        "soft_mute_retrieve": "Your saved message:",
+        "bot_greeting": "👋 Hello! I'm QuietLobbyBot — a moderation bot.\nI help protect public groups from spammers.\n\n⚙️ <b>Custom bots and automation:</b> @bimivan",
+        "cb_success": "Success!",
+        "cb_wrong": "Wrong!",
+        "cb_error": "An error occurred, please try again.",
+        "cb_keyboard_error": "Keyboard error",
+        "invalid_verify_link": "Invalid verification link format."
     },
     "vi": {
         "greet": "Xin chào, {name}!\n\nBạn đang tham gia nhóm <b>{chat_name}</b>.\n\nĐể chống tin rác, vui lòng chọn <b>{target_word}</b> từ các nút bên dưới:",
@@ -56,7 +72,15 @@ TRANSLATIONS = {
         "btn_return": "Quay lại nhóm",
         "too_slow": "Hết giờ! Bạn đã không xác minh kịp thời và đã bị xóa khỏi nhóm.",
         "admin_verification_info": "ℹ️ Bạn là quản trị viên của cuộc trò chuyện này. Liên kết này dùng để xác minh thành viên mới.",
-        "not_your_verification": "Xác minh này dành cho người dùng khác (hoặc thời gian xác minh đã hết)."
+        "not_your_verification": "Xác minh này dành cho người dùng khác (hoặc thời gian xác minh đã hết).",
+        "soft_mute_warn": "\n\n⚠️ <b>Tin nhắn của bạn đã được lưu.</b> Xác minh trong tin nhắn riêng để nhận lại.",
+        "soft_mute_retrieve": "Tin nhắn đã lưu của bạn:",
+        "bot_greeting": "👋 Xin chào! Tôi là QuietLobbyBot — bot kiểm duyệt.\nTôi giúp bảo vệ các nhóm công khai khỏi tin rác.\n\n⚙️ <b>Thiết kế bot & tự động hóa:</b> @bimivan",
+        "cb_success": "Thành công!",
+        "cb_wrong": "Sai rồi!",
+        "cb_error": "Đã xảy ra lỗi, vui lòng thử lại.",
+        "cb_keyboard_error": "Lỗi bàn phím",
+        "invalid_verify_link": "Định dạng liên kết xác minh không hợp lệ."
     }
 }
 

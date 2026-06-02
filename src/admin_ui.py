@@ -17,6 +17,9 @@ class AdminSettings(StatesGroup):
     waiting_for_welcome = State()
     waiting_timeout_input = State()
     waiting_timeout_confirm = State()
+    waiting_for_sa_text = State()
+    waiting_for_sa_url = State()
+
 
 
 # Системный ID, используемый Telegram для отправки сообщений от имени анонимных администраторов групп (@GroupAnonymousBot)
@@ -33,7 +36,8 @@ async def is_chat_admin(bot: Bot, chat_id: int, user_id: int) -> bool:
         return True
     try:
         member = await bot.get_chat_member(chat_id=chat_id, user_id=user_id)
-        if member.status in ['administrator', 'creator']:
+        status_str = str(member.status).split('.')[-1].lower()
+        if status_str in ['administrator', 'creator', 'owner']:
             return True
         return False
     except TelegramAPIError as e:
@@ -57,62 +61,118 @@ async def sync_admins_for_chat(chat_id: int, bot: Bot):
             from database import deactivate_chat
             await deactivate_chat(chat_id)
 
+
+def get_entry_mode_text(chat_name: str) -> str:
+    return (
+        f"🚪 <b>Настройки режима входа:</b> {chat_name}\n\n"
+        "Укажите, как новые участники будут вступать в группу:\n\n"
+        "• <b>Капча в ЛС</b> — новые участники должны пройти проверку в ЛС бота. "
+        "Доступно два режима ограничения:\n"
+        "   • <b>мягкое</b> — перехват сообщений в чате до верификации. Бот удаляет первое сообщение пользователя и предлагает пройти капчу. При этом сохраняет в памяти текст, который пользователь писал, и возвращает его после успешного прохождения капчи.\n"
+        "   • <b>жесткое</b> — ограничение на отправку любых сообщений в Telegram до прохождения капчи.\n"
+        "• <b>Заявка с подтверждением</b> — новые участники подают заявку, админы одобряют её кнопками в ЛС.\n"
+        "• <b>Только оповещение</b> — новые участники подают заявку, бот присылает простое оповещение админам."
+    )
+
 def generate_settings_keyboard(chat_id: int, settings: dict, show_back: bool = False) -> InlineKeyboardMarkup:
-    """Генерирует клавиатуру настроек для конкретного чата."""
-    lang = settings.get('language', 'en')
-    strictness = settings.get('captcha_strictness', 1)
-    welcome = settings.get('welcome_message')
-    timeout_mins = settings.get('verification_timeout', 0)
-    if timeout_mins is None:
-        timeout_mins = 0
-    anti_swear_enabled = settings.get('anti_swear_enabled', 0)
-    max_swear_warnings = settings.get('max_swear_warnings', 3)
-    
-    lang_text = f"Язык: {'🇷🇺 RU' if lang == 'ru' else '🇻🇳 VI' if lang == 'vi' else '🇬🇧 EN'}"
-    strictness_texts = {
-        0: "Строгость: 0 - Ручное одобрение",
-        1: "Строгость: 1 - Слово + кнопка с эмоджи",
-        2: "Строгость: 2 - В разработке",
-        3: "Строгость: 3 - В разработке"
-    }
-    strictness_text = strictness_texts.get(strictness, f"Строгость: {strictness}")
-    welcome_text = "👋 Приветствие: Настроено" if welcome else "👋 Приветствие: Выкл"
-    timeout_text = "⏳ Таймаут: Без лимита" if timeout_mins == 0 else f"⏳ Таймаут: {timeout_mins} мин"
-    
-    anti_swear_text = "🤬 Антимат: 🟢 Вкл" if anti_swear_enabled else "🤬 Антимат: 🔴 Выкл"
-    warnings_text = f"⚠️ Лимит предупреждений: {max_swear_warnings}"
-    
-    back_button = InlineKeyboardButton(text="⬅️ К списку групп", callback_data="adm_back") if show_back else InlineKeyboardButton(text="Закрыть", callback_data="set_close")
+    """Генерирует Главное меню настроек чата."""
+    back_button = (
+        InlineKeyboardButton(text="⬅️ К списку групп", callback_data="adm_back")
+        if show_back
+        else InlineKeyboardButton(text="Закрыть", callback_data="set_close")
+    )
     
     buttons = [
-        [InlineKeyboardButton(text=lang_text, callback_data=f"set_lang:{chat_id}:{lang}")],
-        [InlineKeyboardButton(text=strictness_text, callback_data=f"strict_menu:{chat_id}")],
-        [InlineKeyboardButton(text=welcome_text, callback_data=f"set_welcome:{chat_id}")],
-        [InlineKeyboardButton(text=timeout_text, callback_data=f"timeout_start:{chat_id}")],
-        [InlineKeyboardButton(text=anti_swear_text, callback_data=f"set_antiswear:{chat_id}")],
-        [InlineKeyboardButton(text=warnings_text, callback_data=f"cycle_warnings:{chat_id}")],
+        [InlineKeyboardButton(text="Язык чата", callback_data=f"sub_lang:{chat_id}")],
+        [InlineKeyboardButton(text="Режим входа", callback_data=f"sub_entry:{chat_id}")],
+        [InlineKeyboardButton(text="Антимат", callback_data=f"sub_antiswear:{chat_id}")],
         [back_button]
     ]
     return InlineKeyboardMarkup(inline_keyboard=buttons)
 
-def generate_strictness_keyboard(chat_id: int, pending_strictness: int) -> InlineKeyboardMarkup:
-    """Генерирует клавиатуру выбора строгости с кнопками Сохранить/Отменить."""
-    levels = [
-        (0, "0 - Ручное одобрение"),
-        (1, "1 - Слово + кнопка с эмоджи"),
-        (2, "2 - В разработке"),
-        (3, "3 - В разработке")
+def generate_language_keyboard(chat_id: int, settings: dict) -> InlineKeyboardMarkup:
+    """Генерирует меню выбора языка с флагами."""
+    lang = settings.get('language', 'en')
+    
+    btn_ru = InlineKeyboardButton(text=f"{'✅ ' if lang == 'ru' else ''}Русский 🇷🇺", callback_data=f"set_lang:{chat_id}:ru")
+    btn_en = InlineKeyboardButton(text=f"{'✅ ' if lang == 'en' else ''}English 🇬🇧", callback_data=f"set_lang:{chat_id}:en")
+    btn_vi = InlineKeyboardButton(text=f"{'✅ ' if lang == 'vi' else ''}Tiếng Việt 🇻🇳", callback_data=f"set_lang:{chat_id}:vi")
+    
+    buttons = [
+        [btn_ru],
+        [btn_en],
+        [btn_vi],
+        [InlineKeyboardButton(text="⬅️ Назад в меню", callback_data=f"back_main:{chat_id}")]
+    ]
+    return InlineKeyboardMarkup(inline_keyboard=buttons)
+
+def generate_entry_mode_keyboard(chat_id: int, settings: dict) -> InlineKeyboardMarkup:
+    """Генерирует подменю режима входа."""
+    strictness = settings.get('captcha_strictness', 1)
+    join_buttons_enabled = settings.get('join_buttons_enabled', 1)
+    is_soft_mute = settings.get('is_soft_mute', 0)
+    welcome = settings.get('welcome_message')
+    timeout_mins = settings.get('verification_timeout', 0)
+    if timeout_mins is None:
+        timeout_mins = 0
+        
+    mode_captcha = strictness == 1
+    mode_approve = (strictness == 0) and (join_buttons_enabled == 1)
+    mode_notify = (strictness == 0) and (join_buttons_enabled == 0)
+    
+    btn_captcha = InlineKeyboardButton(text=f"{'✅ ' if mode_captcha else ''}Капча в ЛС", callback_data=f"set_mode:{chat_id}:captcha")
+    btn_approve = InlineKeyboardButton(text=f"{'✅ ' if mode_approve else ''}Заявка с подтверждением", callback_data=f"set_mode:{chat_id}:approve")
+    btn_notify = InlineKeyboardButton(text=f"{'✅ ' if mode_notify else ''}Только оповещение", callback_data=f"set_mode:{chat_id}:notify")
+    
+    buttons = [
+        [btn_captcha]
     ]
     
-    buttons = []
-    for val, name in levels:
-        mark = "🔘 " if val == pending_strictness else "⚪ "
-        buttons.append([InlineKeyboardButton(text=f"{mark}{name}", callback_data=f"strict_sel:{chat_id}:{val}")])
+    if mode_captcha:
+        btn_soft_mute = InlineKeyboardButton(text=f"{'✅ ' if is_soft_mute == 1 else ''}Мягкое ограничение", callback_data=f"set_mute_type:{chat_id}:soft")
+        btn_hard_mute = InlineKeyboardButton(text=f"{'✅ ' if is_soft_mute == 0 else ''}Жесткое ограничение", callback_data=f"set_mute_type:{chat_id}:hard")
+        buttons.append([btn_soft_mute, btn_hard_mute])
         
-    buttons.append([
-        InlineKeyboardButton(text="✅ Сохранить", callback_data=f"strict_save:{chat_id}:{pending_strictness}"),
-        InlineKeyboardButton(text="❌ Отменить", callback_data=f"strict_cancel:{chat_id}")
-    ])
+    buttons.append([btn_approve])
+    buttons.append([btn_notify])
+    
+    if mode_captcha:
+        timeout_text = "Таймаут: Без лимита" if timeout_mins == 0 else f"Таймаут: {timeout_mins} мин"
+        btn_timeout = InlineKeyboardButton(text=timeout_text, callback_data=f"timeout_start:{chat_id}")
+        
+        welcome_text = "Приветствие: Настроено" if welcome else "Приветствие: Выкл"
+        btn_welcome = InlineKeyboardButton(text=welcome_text, callback_data=f"set_welcome:{chat_id}")
+        
+        buttons.append([btn_timeout])
+        buttons.append([btn_welcome])
+        if welcome:
+            buttons.append([InlineKeyboardButton(text="Посмотреть настроенное приветствие", callback_data=f"show_welcome_preview:{chat_id}")])
+    elif mode_approve:
+        welcome_text = "Приветствие: Настроено" if welcome else "Приветствие: Выкл"
+        btn_welcome = InlineKeyboardButton(text=welcome_text, callback_data=f"set_welcome:{chat_id}")
+        buttons.append([btn_welcome])
+        if welcome:
+            buttons.append([InlineKeyboardButton(text="Посмотреть настроенное приветствие", callback_data=f"show_welcome_preview:{chat_id}")])
+        
+    buttons.append([InlineKeyboardButton(text="⬅️ Назад в меню", callback_data=f"back_main:{chat_id}")])
+    return InlineKeyboardMarkup(inline_keyboard=buttons)
+
+def generate_antiswear_keyboard(chat_id: int, settings: dict) -> InlineKeyboardMarkup:
+    """Генерирует подменю антимата."""
+    anti_swear_enabled = settings.get('anti_swear_enabled', 0)
+    max_swear_warnings = settings.get('max_swear_warnings', 3)
+    
+    anti_swear_text = f"Антимат: {'Вкл' if anti_swear_enabled else 'Выкл'}"
+    btn_toggle = InlineKeyboardButton(text=anti_swear_text, callback_data=f"set_antiswear:{chat_id}")
+    
+    warnings_text = f"Лимит предупреждений: {max_swear_warnings}"
+    btn_warnings = InlineKeyboardButton(text=warnings_text, callback_data=f"cycle_warnings:{chat_id}")
+    
+    buttons = [
+        [btn_toggle],
+        [btn_warnings],
+        [InlineKeyboardButton(text="⬅️ Назад в меню", callback_data=f"back_main:{chat_id}")]
+    ]
     return InlineKeyboardMarkup(inline_keyboard=buttons)
 
 async def open_settings_panel(event: Message | CallbackQuery, bot: Bot, chat_id: int, show_back: bool = False, state: FSMContext = None):
@@ -199,7 +259,25 @@ async def show_admin_chats(event: Message | CallbackQuery, bot: Bot):
             await event.answer(error_text)
         return
 
-    if not chats:
+    admin_id_env = os.getenv("ADMIN_ID")
+    is_sa = False
+    if admin_id_env:
+        try:
+            if int(admin_id_env) == user_id:
+                is_sa = True
+        except ValueError:
+            pass
+
+    buttons = []
+    for chat_data in chats:
+        chat_id = chat_data["chat_id"]
+        title = chat_data.get("title") or f"Чат {chat_id}"
+        buttons.append([InlineKeyboardButton(text=f"⚙️ {title}", callback_data=f"adm_set:{chat_id}")])
+    
+    if is_sa:
+        buttons.append([InlineKeyboardButton(text="👑 Обязательная кнопка", callback_data="sa_button_settings")])
+        
+    if not chats and not is_sa:
         text = "💬 <b>У вас нет чатов для настройки.</b>\n\nВы должны быть администратором в чатах, куда добавлен этот бот."
         if is_callback:
             await event.message.edit_text(text, parse_mode="HTML")
@@ -208,12 +286,6 @@ async def show_admin_chats(event: Message | CallbackQuery, bot: Bot):
             await event.answer(text, parse_mode="HTML")
         return
 
-    buttons = []
-    for chat_data in chats:
-        chat_id = chat_data["chat_id"]
-        title = chat_data.get("title") or f"Чат {chat_id}"
-        buttons.append([InlineKeyboardButton(text=f"⚙️ {title}", callback_data=f"adm_set:{chat_id}")])
-    
     # Кнопка закрытия меню
     buttons.append([InlineKeyboardButton(text="❌ Закрыть меню", callback_data="set_close")])
     markup = InlineKeyboardMarkup(inline_keyboard=buttons)
@@ -224,6 +296,7 @@ async def show_admin_chats(event: Message | CallbackQuery, bot: Bot):
         await event.answer()
     else:
         await event.answer(text, reply_markup=markup, parse_mode="HTML")
+
 
 @admin_router.message(Command(commands=["settings"]), F.chat.type == "private")
 async def handle_settings_private(message: Message, bot: Bot):
@@ -242,83 +315,119 @@ async def handle_admin_back_callback(callback: CallbackQuery, bot: Bot):
     """Возвращает к списку чатов."""
     await show_admin_chats(callback, bot)
 
+@admin_router.callback_query(F.data.startswith("sub_lang:"))
+async def sub_language_callback(callback: CallbackQuery, bot: Bot):
+    chat_id = int(callback.data.split(":")[1])
+    if not await is_chat_admin(bot, chat_id, callback.from_user.id):
+        await callback.answer("У вас нет прав!", show_alert=True)
+        return
+    settings = await get_chat_settings(chat_id)
+    markup = generate_language_keyboard(chat_id, settings)
+    await callback.message.edit_text(
+        "🌍 <b>Настройка языка чата</b>\n\nВыберите основной язык общения для системных сообщений бота в группе:",
+        reply_markup=markup,
+        parse_mode="HTML"
+    )
+    await callback.answer()
+
+@admin_router.callback_query(F.data.startswith("sub_entry:"))
+async def sub_entry_callback(callback: CallbackQuery, bot: Bot):
+    chat_id = int(callback.data.split(":")[1])
+    if not await is_chat_admin(bot, chat_id, callback.from_user.id):
+        await callback.answer("У вас нет прав!", show_alert=True)
+        return
+    try:
+        chat = await bot.get_chat(chat_id)
+        chat_name = chat.title or str(chat_id)
+    except TelegramAPIError:
+        chat_name = str(chat_id)
+    settings = await get_chat_settings(chat_id)
+    markup = generate_entry_mode_keyboard(chat_id, settings)
+    text = get_entry_mode_text(chat_name)
+    await callback.message.edit_text(
+        text,
+        reply_markup=markup,
+        parse_mode="HTML"
+    )
+    await callback.answer()
+
+@admin_router.callback_query(F.data.startswith("sub_antiswear:"))
+async def sub_antiswear_callback(callback: CallbackQuery, bot: Bot):
+    chat_id = int(callback.data.split(":")[1])
+    if not await is_chat_admin(bot, chat_id, callback.from_user.id):
+        await callback.answer("У вас нет прав!", show_alert=True)
+        return
+    settings = await get_chat_settings(chat_id)
+    markup = generate_antiswear_keyboard(chat_id, settings)
+    await callback.message.edit_text(
+        "🤬 <b>Настройки антимата</b>\n\nВключите автоматическую фильтрацию нецензурной лексики:",
+        reply_markup=markup,
+        parse_mode="HTML"
+    )
+    await callback.answer()
+
+@admin_router.callback_query(F.data.startswith("back_main:"))
+async def back_main_callback(callback: CallbackQuery, bot: Bot):
+    chat_id = int(callback.data.split(":")[1])
+    if not await is_chat_admin(bot, chat_id, callback.from_user.id):
+        await callback.answer("У вас нет прав!", show_alert=True)
+        return
+    try:
+        chat = await bot.get_chat(chat_id)
+        chat_name = chat.title or str(chat_id)
+    except TelegramAPIError:
+        chat_name = str(chat_id)
+    settings = await get_chat_settings(chat_id)
+    markup = generate_settings_keyboard(chat_id, settings, show_back=True)
+    await callback.message.edit_text(
+        f"⚙️ <b>Настройки для чата:</b> {chat_name}\n\nВыберите параметр для изменения:",
+        reply_markup=markup,
+        parse_mode="HTML"
+    )
+    await callback.answer()
+
 @admin_router.callback_query(F.data.startswith("set_lang:"))
 async def change_language_callback(callback: CallbackQuery, bot: Bot):
-    _, chat_id_str, current_lang = callback.data.split(":")
+    _, chat_id_str, selected_lang = callback.data.split(":")
     chat_id = int(chat_id_str)
     
     if not await is_chat_admin(bot, chat_id, callback.from_user.id):
         await callback.answer("У вас нет прав!", show_alert=True)
         return
         
-    # Цикл переключения языка
-    langs = ['ru', 'en', 'vi']
-    next_lang = langs[(langs.index(current_lang) + 1) % len(langs)]
-    
-    await update_chat_setting(chat_id, 'language', next_lang)
+    await update_chat_setting(chat_id, 'language', selected_lang)
     
     settings = await get_chat_settings(chat_id)
-    markup = generate_settings_keyboard(chat_id, settings)
-    
-    await callback.message.edit_reply_markup(reply_markup=markup)
-    await callback.answer(f"Язык изменен на {next_lang.upper()}")
-
-@admin_router.callback_query(F.data.startswith("strict_menu:"))
-async def strict_menu_callback(callback: CallbackQuery, bot: Bot):
-    _, chat_id_str = callback.data.split(":")
-    chat_id = int(chat_id_str)
-    
-    if not await is_chat_admin(bot, chat_id, callback.from_user.id):
-        await callback.answer("У вас нет прав!", show_alert=True)
-        return
-        
-    settings = await get_chat_settings(chat_id)
-    current_strict = settings.get('captcha_strictness', 1) if settings else 1
-    
-    markup = generate_strictness_keyboard(chat_id, current_strict)
-    
-    await callback.message.edit_text(
-        "🛡️ <b>Настройка строгости капчи</b>\n\n"
-        "Выберите уровень проверки для новых участников:\n\n"
-        "• <b>Уровень 0</b> — Ручное одобрение заявок админом (когда админ сам решает, кого пускать).\n"
-        "• <b>Уровень 1</b> — Автоматическая кнопочная капча (эмодзи) в ЛС (для открытых чатов).\n"
-        "• <b>Уровни 2/3</b> — В разработке.\n\n"
-        "Выберите нужный вариант, после чего нажмите <b>Сохранить</b>.",
-        reply_markup=markup,
-        parse_mode="HTML"
-    )
-    await callback.answer()
-
-@admin_router.callback_query(F.data.startswith("strict_sel:"))
-async def strict_select_callback(callback: CallbackQuery, bot: Bot):
-    _, chat_id_str, selected_strict = callback.data.split(":")
-    chat_id = int(chat_id_str)
-    selected_strict = int(selected_strict)
-    
-    if not await is_chat_admin(bot, chat_id, callback.from_user.id):
-        await callback.answer("У вас нет прав!", show_alert=True)
-        return
-        
-    markup = generate_strictness_keyboard(chat_id, selected_strict)
+    markup = generate_language_keyboard(chat_id, settings)
     
     try:
-        await callback.message.edit_reply_markup(reply_markup=markup)
+        await callback.message.edit_text(
+            "🌍 <b>Настройка языка чата</b>\n\nВыберите основной язык общения для системных сообщений бота в группе:",
+            reply_markup=markup,
+            parse_mode="HTML"
+        )
     except TelegramAPIError:
         pass
-    await callback.answer()
+    await callback.answer(f"Язык изменен на {selected_lang.upper()}")
 
-@admin_router.callback_query(F.data.startswith("strict_save:"))
-async def strict_save_callback(callback: CallbackQuery, bot: Bot):
-    _, chat_id_str, target_strict = callback.data.split(":")
+@admin_router.callback_query(F.data.startswith("set_mode:"))
+async def change_mode_callback(callback: CallbackQuery, bot: Bot):
+    _, chat_id_str, selected_mode = callback.data.split(":")
     chat_id = int(chat_id_str)
-    target_strict = int(target_strict)
     
     if not await is_chat_admin(bot, chat_id, callback.from_user.id):
         await callback.answer("У вас нет прав!", show_alert=True)
         return
         
-    await update_chat_setting(chat_id, 'captcha_strictness', target_strict)
-    
+    if selected_mode == 'captcha':
+        await update_chat_setting(chat_id, 'captcha_strictness', 1)
+    elif selected_mode == 'approve':
+        await update_chat_setting(chat_id, 'captcha_strictness', 0)
+        await update_chat_setting(chat_id, 'join_buttons_enabled', 1)
+    elif selected_mode == 'notify':
+        await update_chat_setting(chat_id, 'captcha_strictness', 0)
+        await update_chat_setting(chat_id, 'join_buttons_enabled', 0)
+        
     try:
         chat = await bot.get_chat(chat_id)
         chat_name = chat.title or str(chat_id)
@@ -326,31 +435,61 @@ async def strict_save_callback(callback: CallbackQuery, bot: Bot):
         chat_name = str(chat_id)
         
     settings = await get_chat_settings(chat_id)
-    markup = generate_settings_keyboard(chat_id, settings)
+    markup = generate_entry_mode_keyboard(chat_id, settings)
     
-    await callback.message.edit_text(
-        f"⚙️ <b>Настройки для чата:</b> {chat_name}\n\nВыберите параметр для изменения:",
-        reply_markup=markup,
-        parse_mode="HTML"
-    )
+    text = get_entry_mode_text(chat_name)
     
-    if target_strict == 0:
-        await callback.answer(
-            "⚠️ Важно!\nЧтобы этот режим работал, обязательно включите «Заявки на вступление» (Join Requests) в настройках вашей группы в Telegram!",
-            show_alert=True
-        )
+    try:
+        await callback.message.edit_text(text, reply_markup=markup, parse_mode="HTML")
+    except TelegramAPIError:
+        pass
+        
+    mode_text = {
+        'captcha': 'Капча в ЛС',
+        'approve': 'Заявка с подтверждением',
+        'notify': 'Только оповещение'
+    }.get(selected_mode, selected_mode)
+    
+    if selected_mode in ['approve', 'notify']:
+        # Проверяем, есть ли у бота право can_invite_users (необходимо для получения заявок)
+        bot_has_invite_right = False
+        try:
+            bot_info = await bot.get_me()
+            bot_member = await bot.get_chat_member(chat_id=chat_id, user_id=bot_info.id)
+            if hasattr(bot_member, 'can_invite_users') and bot_member.can_invite_users:
+                bot_has_invite_right = True
+        except TelegramAPIError:
+            pass
+        
+        if not bot_has_invite_right:
+            await callback.answer(
+                "⚠️ Внимание!\n\n"
+                "У бота нет права «Добавлять участников» (Invite Users).\n"
+                "Без этого права бот НЕ будет получать заявки на вступление от Telegram!\n\n"
+                "Зайдите в: Настройки группы → Администраторы → Бот → включите «Add Members / Invite Users via link».",
+                show_alert=True
+            )
+        else:
+            await callback.answer(
+                "⚠️ Важно!\nДля работы режимов заявок обязательно включите «Заявки на вступление» в настройках группы в Telegram!",
+                show_alert=True
+            )
     else:
-        await callback.answer(f"Сохранено: Строгость {target_strict}")
+        await callback.answer(f"Выбран режим: {mode_text}")
 
-@admin_router.callback_query(F.data.startswith("strict_cancel:"))
-async def strict_cancel_callback(callback: CallbackQuery, bot: Bot):
-    _, chat_id_str = callback.data.split(":")
-    chat_id = int(chat_id_str)
+@admin_router.callback_query(F.data.startswith("set_mute_type:"))
+async def set_mute_callback(callback: CallbackQuery, bot: Bot):
+    parts = callback.data.split(":")
+    chat_id = int(parts[1])
+    mute_type = parts[2]  # 'soft' или 'hard'
     
     if not await is_chat_admin(bot, chat_id, callback.from_user.id):
         await callback.answer("У вас нет прав!", show_alert=True)
         return
         
+    new_mute = 1 if mute_type == 'soft' else 0
+    await update_chat_setting(chat_id, 'is_soft_mute', new_mute)
+    
     try:
         chat = await bot.get_chat(chat_id)
         chat_name = chat.title or str(chat_id)
@@ -358,14 +497,17 @@ async def strict_cancel_callback(callback: CallbackQuery, bot: Bot):
         chat_name = str(chat_id)
         
     settings = await get_chat_settings(chat_id)
-    markup = generate_settings_keyboard(chat_id, settings)
+    markup = generate_entry_mode_keyboard(chat_id, settings)
     
-    await callback.message.edit_text(
-        f"⚙️ <b>Настройки для чата:</b> {chat_name}\n\nВыберите параметр для изменения:",
-        reply_markup=markup,
-        parse_mode="HTML"
-    )
-    await callback.answer("Изменения отменены.")
+    text = get_entry_mode_text(chat_name)
+    
+    try:
+        await callback.message.edit_text(text, reply_markup=markup, parse_mode="HTML")
+    except TelegramAPIError:
+        pass
+        
+    mute_text = "Мягкий" if new_mute else "Жесткий"
+    await callback.answer(f"Тип ограничения изменен на {mute_text}")
 
 async def _restore_settings_message(callback: CallbackQuery, bot: Bot, chat_id: int, state: FSMContext):
     """Возвращает сообщение к главному экрану настроек (после отмены / сохранения)."""
@@ -376,12 +518,45 @@ async def _restore_settings_message(callback: CallbackQuery, bot: Bot, chat_id: 
     except TelegramAPIError:
         chat_name = str(chat_id)
     settings = await get_chat_settings(chat_id)
-    markup = generate_settings_keyboard(chat_id, settings)
+    markup = generate_settings_keyboard(chat_id, settings, show_back=True)
     await callback.message.edit_text(
         f"⚙️ <b>Настройки для чата:</b> {chat_name}\n\nВыберите параметр для изменения:",
         reply_markup=markup,
         parse_mode="HTML",
     )
+
+async def _restore_entry_menu_message(event: Message | CallbackQuery, bot: Bot, chat_id: int, state: FSMContext):
+    """Возвращает к подменю режима входа."""
+    try:
+        chat = await bot.get_chat(chat_id)
+        chat_name = chat.title or str(chat_id)
+    except TelegramAPIError:
+        chat_name = str(chat_id)
+    settings = await get_chat_settings(chat_id)
+    markup = generate_entry_mode_keyboard(chat_id, settings)
+    
+    text = get_entry_mode_text(chat_name)
+    
+    if isinstance(event, CallbackQuery):
+        await event.message.edit_text(text, reply_markup=markup, parse_mode="HTML")
+    else:
+        data = await state.get_data()
+        settings_msg_id = data.get("settings_msg_id")
+        if settings_msg_id:
+            try:
+                await bot.edit_message_text(
+                    chat_id=event.from_user.id,
+                    message_id=settings_msg_id,
+                    text=text,
+                    reply_markup=markup,
+                    parse_mode="HTML"
+                )
+                await state.clear()
+                return
+            except TelegramAPIError:
+                pass
+        await bot.send_message(chat_id=event.from_user.id, text=text, reply_markup=markup, parse_mode="HTML")
+    await state.clear()
 
 
 @admin_router.callback_query(F.data.startswith("timeout_start:"))
@@ -402,8 +577,8 @@ async def timeout_start_callback(callback: CallbackQuery, state: FSMContext, bot
 
     markup = InlineKeyboardMarkup(
         inline_keyboard=[
-            [InlineKeyboardButton(text="♾️ Без лимита (снять таймаут)", callback_data=f"timeout_clear:{chat_id}")],
-            [InlineKeyboardButton(text="❌ Отмена", callback_data=f"timeout_cancel:{chat_id}")],
+            [InlineKeyboardButton(text="Без лимита (снять таймаут)", callback_data=f"timeout_clear:{chat_id}")],
+            [InlineKeyboardButton(text="Отмена", callback_data=f"timeout_cancel:{chat_id}")],
         ]
     )
 
@@ -431,7 +606,8 @@ async def timeout_cancel_callback(callback: CallbackQuery, state: FSMContext, bo
         await callback.answer("У вас нет прав!", show_alert=True)
         return
     await callback.answer("Отменено.")
-    await _restore_settings_message(callback, bot, chat_id, state)
+    await callback.message.answer("❌ Изменение таймаута отменено.")
+    await _restore_entry_menu_message(callback, bot, chat_id, state)
 
 
 @admin_router.callback_query(F.data.startswith("timeout_clear:"))
@@ -444,7 +620,8 @@ async def timeout_clear_callback(callback: CallbackQuery, state: FSMContext, bot
         return
     await update_chat_setting(chat_id, "verification_timeout", 0)
     await callback.answer("Лимит снят.")
-    await _restore_settings_message(callback, bot, chat_id, state)
+    await callback.message.answer("✅ Лимит времени снят.")
+    await _restore_entry_menu_message(callback, bot, chat_id, state)
 
 
 @admin_router.callback_query(F.data.startswith("timeout_save:"))
@@ -460,12 +637,14 @@ async def timeout_save_callback(callback: CallbackQuery, state: FSMContext, bot:
     pending = data.get("pending_timeout_minutes")
     if pending is None:
         await callback.answer("Нет данных для сохранения. Начни сначала.", show_alert=True)
-        await _restore_settings_message(callback, bot, chat_id, state)
+        await callback.message.answer("⚠️ Ошибка сохранения таймаута.")
+        await _restore_entry_menu_message(callback, bot, chat_id, state)
         return
 
     await update_chat_setting(chat_id, "verification_timeout", int(pending))
     await callback.answer(f"Сохранено: {pending} мин.")
-    await _restore_settings_message(callback, bot, chat_id, state)
+    await callback.message.answer(f"✅ Сохранено: {pending} мин.")
+    await _restore_entry_menu_message(callback, bot, chat_id, state)
 
 
 @admin_router.callback_query(F.data.startswith("timeout_discard:"))
@@ -477,7 +656,8 @@ async def timeout_discard_callback(callback: CallbackQuery, state: FSMContext, b
         await callback.answer("У вас нет прав!", show_alert=True)
         return
     await callback.answer("Изменения не сохранены.")
-    await _restore_settings_message(callback, bot, chat_id, state)
+    await callback.message.answer("❌ Изменения не сохранены.")
+    await _restore_entry_menu_message(callback, bot, chat_id, state)
 
 
 @admin_router.message(
@@ -526,7 +706,7 @@ async def process_timeout_input(message: Message, state: FSMContext, bot: Bot):
         inline_keyboard=[
             [
                 InlineKeyboardButton(text="✅ Сохранить", callback_data=f"timeout_save:{chat_id}"),
-                InlineKeyboardButton(text="❌ Отменить", callback_data=f"timeout_discard:{chat_id}"),
+                InlineKeyboardButton(text="Отменить", callback_data=f"timeout_discard:{chat_id}"),
             ]
         ]
     )
@@ -585,9 +765,11 @@ async def toggle_antiswear_callback(callback: CallbackQuery, bot: Bot):
     logger.info(f"Админ {callback.from_user.id} изменил антимат в чате {chat_id} на {new_state}")
     
     settings['anti_swear_enabled'] = new_state
-    markup = generate_settings_keyboard(chat_id, settings, show_back=True)
+    markup = generate_antiswear_keyboard(chat_id, settings)
+    
+    text = "🤬 <b>Настройки антимата</b>\n\nВключите автоматическую фильтрацию нецензурной лексики:"
     try:
-        await callback.message.edit_reply_markup(reply_markup=markup)
+        await callback.message.edit_text(text, reply_markup=markup, parse_mode="HTML")
     except TelegramAPIError:
         pass
     await callback.answer(f"Антимат {'включен' if new_state else 'выключен'}")
@@ -608,12 +790,14 @@ async def cycle_warnings_callback(callback: CallbackQuery, bot: Bot):
     new_warnings = current_warnings + 1 if current_warnings < 5 else 1
     
     await update_chat_setting(chat_id, 'max_swear_warnings', new_warnings)
-    logger.info(f"Админ {callback.from_user.id} изменил лимит страйков в чате {chat_id} на {new_warnings}")
+    logger.info(f"Админ {callback.from_user.id} изменил лимит предупреждений в чате {chat_id} на {new_warnings}")
     
     settings['max_swear_warnings'] = new_warnings
-    markup = generate_settings_keyboard(chat_id, settings, show_back=True)
+    markup = generate_antiswear_keyboard(chat_id, settings)
+    
+    text = "🤬 <b>Настройки антимата</b>\n\nВключите автоматическую фильтрацию нецензурной лексики:"
     try:
-        await callback.message.edit_reply_markup(reply_markup=markup)
+        await callback.message.edit_text(text, reply_markup=markup, parse_mode="HTML")
     except TelegramAPIError:
         pass
     await callback.answer(f"Лимит предупреждений изменен на {new_warnings}")
@@ -641,8 +825,8 @@ async def set_welcome_callback(callback: CallbackQuery, state: FSMContext, bot: 
     
     buttons = []
     if welcome:
-        buttons.append([InlineKeyboardButton(text="🗑️ Отключить приветствие", callback_data=f"del_welcome:{chat_id}")])
-    buttons.append([InlineKeyboardButton(text="❌ Отмена", callback_data=f"cancel_welcome:{chat_id}")])
+        buttons.append([InlineKeyboardButton(text="Отключить приветствие", callback_data=f"del_welcome:{chat_id}")])
+    buttons.append([InlineKeyboardButton(text="Отмена", callback_data=f"cancel_welcome:{chat_id}")])
     markup = InlineKeyboardMarkup(inline_keyboard=buttons)
     
     await callback.message.edit_text(
@@ -666,22 +850,9 @@ async def cancel_welcome_callback(callback: CallbackQuery, state: FSMContext, bo
     _, chat_id_str = callback.data.split(":")
     chat_id = int(chat_id_str)
     
-    await state.clear()
     await callback.answer("Изменение отменено.")
-    
-    try:
-        chat = await bot.get_chat(chat_id)
-        chat_name = chat.title or str(chat_id)
-    except TelegramAPIError:
-        chat_name = str(chat_id)
-        
-    settings = await get_chat_settings(chat_id)
-    markup = generate_settings_keyboard(chat_id, settings)
-    await callback.message.edit_text(
-        f"⚙️ <b>Настройки для чата:</b> {chat_name}\n\nВыберите параметр для изменения:",
-        reply_markup=markup,
-        parse_mode="HTML"
-    )
+    await callback.message.answer("❌ Изменение отменено.")
+    await _restore_entry_menu_message(callback, bot, chat_id, state)
 
 @admin_router.callback_query(F.data.startswith("del_welcome:"))
 async def del_welcome_callback(callback: CallbackQuery, state: FSMContext, bot: Bot):
@@ -689,28 +860,14 @@ async def del_welcome_callback(callback: CallbackQuery, state: FSMContext, bot: 
     chat_id = int(chat_id_str)
     
     await update_chat_setting(chat_id, 'welcome_message', None)
-    await state.clear()
     await callback.answer("Приветствие отключено.", show_alert=True)
-    
-    try:
-        chat = await bot.get_chat(chat_id)
-        chat_name = chat.title or str(chat_id)
-    except TelegramAPIError:
-        chat_name = str(chat_id)
-        
-    settings = await get_chat_settings(chat_id)
-    markup = generate_settings_keyboard(chat_id, settings)
-    await callback.message.edit_text(
-        f"⚙️ <b>Настройки для чата:</b> {chat_name}\n\nВыберите параметр для изменения:",
-        reply_markup=markup,
-        parse_mode="HTML"
-    )
+    await callback.message.answer("✅ Приветствие отключено.")
+    await _restore_entry_menu_message(callback, bot, chat_id, state)
 
 @admin_router.message(AdminSettings.waiting_for_welcome)
 async def process_welcome_message(message: Message, state: FSMContext, bot: Bot):
     data = await state.get_data()
     chat_id = data.get("settings_chat_id")
-    settings_msg_id = data.get("settings_msg_id")
     
     if not chat_id:
         await state.clear()
@@ -719,7 +876,6 @@ async def process_welcome_message(message: Message, state: FSMContext, bot: Bot)
     # Сохраняем новое приветствие
     new_welcome = message.text
     await update_chat_setting(chat_id, 'welcome_message', new_welcome)
-    await state.clear()
     
     # Пытаемся удалить отправленное пользователем сообщение для чистоты
     try:
@@ -727,30 +883,177 @@ async def process_welcome_message(message: Message, state: FSMContext, bot: Bot)
     except TelegramAPIError:
         pass
         
-    try:
-        chat = await bot.get_chat(chat_id)
-        chat_name = chat.title or str(chat_id)
-    except TelegramAPIError:
-        chat_name = str(chat_id)
+    await bot.send_message(chat_id=message.from_user.id, text="✅ Приветствие успешно сохранено!")
+    await _restore_entry_menu_message(message, bot, chat_id, state)
+
+@admin_router.callback_query(F.data.startswith("show_welcome_preview:"))
+async def show_welcome_preview_callback(callback: CallbackQuery, bot: Bot):
+    import html
+    from handlers.captcha import parse_welcome_message
+    
+    chat_id = int(callback.data.split(":")[1])
+    if not await is_chat_admin(bot, chat_id, callback.from_user.id):
+        await callback.answer("У вас нет прав!", show_alert=True)
+        return
         
     settings = await get_chat_settings(chat_id)
-    markup = generate_settings_keyboard(chat_id, settings)
+    welcome_msg = settings.get("welcome_message") if settings else None
     
-    # Редактируем исходное сообщение настроек
-    if settings_msg_id:
-        try:
-            await bot.edit_message_text(
-                chat_id=message.from_user.id,
-                message_id=settings_msg_id,
-                text=f"✅ <b>Приветствие успешно сохранено!</b>\n\n⚙️ <b>Настройки для чата:</b> {chat_name}\n\nВыберите параметр для изменения:",
-                reply_markup=markup,
-                parse_mode="HTML"
-            )
-            return
-        except TelegramAPIError:
-            pass
-            
-    # Запасной вариант
-    await message.answer("✅ Приветственное сообщение сохранено!")
-    await message.answer(f"⚙️ <b>Настройки для чата:</b> {chat_name}\n\nВыберите параметр для изменения:", reply_markup=markup, parse_mode="HTML")
+    if not welcome_msg:
+        await callback.answer("Приветствие не настроено в этом чате.", show_alert=True)
+        return
+        
+    user_name = html.escape(callback.from_user.first_name)
+    user_mention = f'<a href="tg://user?id={callback.from_user.id}">{user_name}</a>'
+    formatted_welcome = welcome_msg.replace("{name}", user_name).replace("{mention}", user_mention)
+    
+    welcome_text, welcome_markup = await parse_welcome_message(formatted_welcome)
+    
+    preview_header = "👀 <b>Пример приветственного сообщения:</b>\n\n"
+    
+    try:
+        await callback.message.answer(
+            text=f"{preview_header}{welcome_text}",
+            reply_markup=welcome_markup,
+            parse_mode="HTML"
+        )
+        await callback.answer("Пример приветствия отправлен.")
+    except TelegramAPIError as e:
+        logger.error(f"Не удалось отправить превью приветствия администратору {callback.from_user.id}: {e}")
+        await callback.answer("Ошибка при отправке превью сообщения.", show_alert=True)
+
+
+async def show_sa_button_settings_menu(message_or_callback: Message | CallbackQuery):
+    """Вспомогательная функция для отображения меню управления обязательной кнопкой."""
+    import html
+    from database import get_global_setting
+    
+    sa_text = await get_global_setting("sa_button_text")
+    sa_url = await get_global_setting("sa_button_url")
+    
+    text = (
+        "👑 <b>Обязательная кнопка суперадмина</b>\n\n"
+        "Эта кнопка автоматически добавляется в конец всех приветственных сообщений в группах. "
+        "Обычные администраторы чатов не видят её в меню настройки приветствия и не могут её удалить.\n\n"
+        f"📝 <b>Текст кнопки:</b> {html.escape(sa_text) if sa_text else '<i>Не настроен</i>'}\n"
+        f"🔗 <b>Ссылка кнопки:</b> {html.escape(sa_url) if sa_url else '<i>Не настроена</i>'}\n\n"
+        "Выберите действие:"
+    )
+    
+    buttons = [
+        [InlineKeyboardButton(text="✏️ Изменить текст", callback_data="sa_edit_text")],
+        [InlineKeyboardButton(text="🔗 Изменить ссылку", callback_data="sa_edit_url")],
+        [InlineKeyboardButton(text="🗑️ Удалить кнопку", callback_data="sa_delete_button")],
+        [InlineKeyboardButton(text="⬅️ Назад в меню", callback_data="adm_back")]
+    ]
+    markup = InlineKeyboardMarkup(inline_keyboard=buttons)
+    
+    if isinstance(message_or_callback, CallbackQuery):
+        await message_or_callback.message.edit_text(text, reply_markup=markup, parse_mode="HTML")
+    else:
+        await message_or_callback.answer(text, reply_markup=markup, parse_mode="HTML")
+
+
+@admin_router.callback_query(F.data == "sa_button_settings")
+async def handle_sa_button_settings(callback: CallbackQuery, bot: Bot):
+    # Проверяем права суперадмина
+    admin_id_env = os.getenv("ADMIN_ID")
+    if not admin_id_env or int(admin_id_env) != callback.from_user.id:
+        await callback.answer("У вас нет прав!", show_alert=True)
+        return
+    await show_sa_button_settings_menu(callback)
+    await callback.answer()
+
+
+@admin_router.callback_query(F.data == "sa_edit_text")
+async def handle_sa_edit_text(callback: CallbackQuery, state: FSMContext):
+    admin_id_env = os.getenv("ADMIN_ID")
+    if not admin_id_env or int(admin_id_env) != callback.from_user.id:
+        await callback.answer("У вас нет прав!", show_alert=True)
+        return
+        
+    await state.set_state(AdminSettings.waiting_for_sa_text)
+    markup = InlineKeyboardMarkup(inline_keyboard=[
+        [InlineKeyboardButton(text="❌ Отмена", callback_data="sa_button_settings")]
+    ])
+    await callback.message.edit_text(
+        "📝 Отправьте мне новый текст для обязательной кнопки (максимум 50 символов):",
+        reply_markup=markup
+    )
+    await callback.answer()
+
+
+@admin_router.message(AdminSettings.waiting_for_sa_text)
+async def process_sa_text(message: Message, state: FSMContext, bot: Bot):
+    import html
+    admin_id_env = os.getenv("ADMIN_ID")
+    if not admin_id_env or int(admin_id_env) != message.from_user.id:
+        return
+        
+    new_text = message.text.strip()
+    if len(new_text) > 50:
+        await message.answer("Текст кнопки слишком длинный (максимум 50 символов). Попробуйте еще раз:")
+        return
+        
+    from database import set_global_setting
+    await set_global_setting("sa_button_text", new_text)
+    await state.clear()
+    
+    await message.answer(f"✅ Текст кнопки успешно изменен на: <b>{html.escape(new_text)}</b>", parse_mode="HTML")
+    await show_sa_button_settings_menu(message)
+
+
+@admin_router.callback_query(F.data == "sa_edit_url")
+async def handle_sa_edit_url(callback: CallbackQuery, state: FSMContext):
+    admin_id_env = os.getenv("ADMIN_ID")
+    if not admin_id_env or int(admin_id_env) != callback.from_user.id:
+        await callback.answer("У вас нет прав!", show_alert=True)
+        return
+        
+    await state.set_state(AdminSettings.waiting_for_sa_url)
+    markup = InlineKeyboardMarkup(inline_keyboard=[
+        [InlineKeyboardButton(text="❌ Отмена", callback_data="sa_button_settings")]
+    ])
+    await callback.message.edit_text(
+        "🔗 Отправьте мне новую ссылку для обязательной кнопки (должна начинаться с http://, https:// или t.me/):",
+        reply_markup=markup
+    )
+    await callback.answer()
+
+
+@admin_router.message(AdminSettings.waiting_for_sa_url)
+async def process_sa_url(message: Message, state: FSMContext, bot: Bot):
+    import html
+    admin_id_env = os.getenv("ADMIN_ID")
+    if not admin_id_env or int(admin_id_env) != message.from_user.id:
+        return
+        
+    new_url = message.text.strip()
+    if not (new_url.startswith("http://") or new_url.startswith("https://") or new_url.startswith("t.me/")):
+        await message.answer("Неверный формат ссылки. Ссылка должна начинаться с http://, https:// или t.me/. Попробуйте еще раз:")
+        return
+        
+    from database import set_global_setting
+    await set_global_setting("sa_button_url", new_url)
+    await state.clear()
+    
+    await message.answer(f"✅ Ссылка кнопки успешно изменена на: <code>{html.escape(new_url)}</code>", parse_mode="HTML")
+    await show_sa_button_settings_menu(message)
+
+
+@admin_router.callback_query(F.data == "sa_delete_button")
+async def handle_sa_delete_button(callback: CallbackQuery):
+    admin_id_env = os.getenv("ADMIN_ID")
+    if not admin_id_env or int(admin_id_env) != callback.from_user.id:
+        await callback.answer("У вас нет прав!", show_alert=True)
+        return
+        
+    from database import set_global_setting
+    await set_global_setting("sa_button_text", None)
+    await set_global_setting("sa_button_url", None)
+    
+    await callback.answer("Обязательная кнопка удалена!", show_alert=True)
+    await show_sa_button_settings_menu(callback)
+
+
 

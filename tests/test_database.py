@@ -71,3 +71,57 @@ async def test_chat_settings_anti_swear():
     settings = await database.get_chat_settings(chat_id)
     assert settings['anti_swear_enabled'] == 1
     assert settings['max_swear_warnings'] == 5
+
+@pytest.mark.asyncio
+async def test_chat_settings_new_fields():
+    chat_id = -100123
+    await database.register_chat(chat_id, "Test Group")
+    
+    settings = await database.get_chat_settings(chat_id)
+    # По умолчанию
+    assert settings['join_buttons_enabled'] == 1
+    assert settings['is_soft_mute'] == 0
+    
+    # Меняем
+    await database.update_chat_setting(chat_id, 'join_buttons_enabled', 0)
+    await database.update_chat_setting(chat_id, 'is_soft_mute', 1)
+    
+    settings = await database.get_chat_settings(chat_id)
+    assert settings['join_buttons_enabled'] == 0
+    assert settings['is_soft_mute'] == 1
+
+@pytest.mark.asyncio
+async def test_pending_verifications():
+    chat_id = -100123
+    user_id = 999
+    
+    # Проверяем изначально
+    assert not await database.is_pending_verification(chat_id, user_id)
+    
+    # Добавляем
+    await database.add_pending_verification(chat_id, user_id)
+    assert await database.is_pending_verification(chat_id, user_id)
+    
+    # Удаляем
+    await database.remove_pending_verification(chat_id, user_id)
+    assert not await database.is_pending_verification(chat_id, user_id)
+
+@pytest.mark.asyncio
+async def test_cached_messages():
+    chat_id = -100123
+    user_id = 999
+    text = "<b>Привет</b>, мир!"
+    
+    # Проверяем изначально
+    cached = await database.get_and_clear_cached_message(chat_id, user_id)
+    assert cached is None
+    
+    # Кэшируем
+    await database.cache_user_message(chat_id, user_id, text)
+    
+    # Получаем и проверяем, что оно удалилось из кэша
+    cached = await database.get_and_clear_cached_message(chat_id, user_id)
+    assert cached == text
+    
+    cached_again = await database.get_and_clear_cached_message(chat_id, user_id)
+    assert cached_again is None

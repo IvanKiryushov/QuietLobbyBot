@@ -48,6 +48,18 @@ async def init_db():
         except aiosqlite.OperationalError:
             pass
 
+        # Безопасная миграция: кнопки одобрения для режима Join Requests
+        try:
+            await db.execute("ALTER TABLE chat_settings ADD COLUMN join_buttons_enabled BOOLEAN DEFAULT 1")
+        except aiosqlite.OperationalError:
+            pass
+
+        # Безопасная миграция: тип мьюта (мягкий / жесткий)
+        try:
+            await db.execute("ALTER TABLE chat_settings ADD COLUMN is_soft_mute INTEGER DEFAULT 0")
+        except aiosqlite.OperationalError:
+            pass
+
         # Таблица предупреждений пользователей за маты
         await db.execute('''
             CREATE TABLE IF NOT EXISTS user_warnings (
@@ -152,8 +164,38 @@ async def init_db():
             )
         ''')
 
+        # Таблица ожидающих верификации (для мягкого мьюта)
+        await db.execute('''
+            CREATE TABLE IF NOT EXISTS pending_verifications (
+                chat_id INTEGER,
+                user_id INTEGER,
+                joined_at TIMESTAMP,
+                PRIMARY KEY (chat_id, user_id)
+            )
+        ''')
+
+        # Таблица кэшированных текстовых сообщений
+        await db.execute('''
+            CREATE TABLE IF NOT EXISTS cached_messages (
+                chat_id INTEGER,
+                user_id INTEGER,
+                html_text TEXT,
+                timestamp TIMESTAMP,
+                PRIMARY KEY (chat_id, user_id)
+            )
+        ''')
+
+        # Таблица глобальных настроек
+        await db.execute('''
+            CREATE TABLE IF NOT EXISTS global_settings (
+                key TEXT PRIMARY KEY,
+                value TEXT
+            )
+        ''')
+
         await db.commit()
         logger.info("База данных инициализирована (все таблицы созданы).")
+
 
 async def register_chat(chat_id: int, title: str = None):
     """Регистрирует новый чат в БД при добавлении бота, или активирует существующий с сохранением названия."""
@@ -200,7 +242,7 @@ async def get_all_active_chats() -> list:
 
 async def update_chat_setting(chat_id: int, key: str, value):
     """Обновляет конкретную настройку для чата."""
-    allowed_keys = ['language', 'captcha_strictness', 'welcome_message', 'verification_timeout', 'anti_swear_enabled', 'max_swear_warnings']
+    allowed_keys = ['language', 'captcha_strictness', 'welcome_message', 'verification_timeout', 'anti_swear_enabled', 'max_swear_warnings', 'join_buttons_enabled', 'is_soft_mute']
     if key not in allowed_keys:
         raise ValueError(f"Настройка {key} не разрешена.")
         
@@ -233,7 +275,7 @@ async def migrate_chat_id(old_chat_id: int, new_chat_id: int):
                 # Обновляем новый чат настройками из старого, а старый деактивируем/удаляем
                 await db.execute('''
                     UPDATE chat_settings 
-                    SET language = ?, captcha_strictness = ?, welcome_message = ?, title = ?, verification_timeout = ?, anti_swear_enabled = ?, max_swear_warnings = ?, is_active = 1
+                    SET language = ?, captcha_strictness = ?, welcome_message = ?, title = ?, verification_timeout = ?, anti_swear_enabled = ?, max_swear_warnings = ?, join_buttons_enabled = ?, is_soft_mute = ?, is_active = 1
                     WHERE chat_id = ?
                 ''', (
                     old_settings['language'],
@@ -243,6 +285,8 @@ async def migrate_chat_id(old_chat_id: int, new_chat_id: int):
                     old_settings['verification_timeout'],
                     old_settings.get('anti_swear_enabled', 0),
                     old_settings.get('max_swear_warnings', 3),
+                    old_settings.get('join_buttons_enabled', 1),
+                    old_settings.get('is_soft_mute', 0),
                     new_chat_id
                 ))
                 await db.execute('DELETE FROM chat_settings WHERE chat_id = ?', (old_chat_id,))
@@ -261,6 +305,12 @@ async def migrate_chat_id(old_chat_id: int, new_chat_id: int):
             
             # Мигрируем участников
             await db.execute('UPDATE group_members SET chat_id = ? WHERE chat_id = ?', (new_chat_id, old_chat_id))
+
+            # Мигрируем ожидающие верификации
+            await db.execute('UPDATE pending_verifications SET chat_id = ? WHERE chat_id = ?', (new_chat_id, old_chat_id))
+
+            # Мигрируем кэшированные сообщения
+            await db.execute('UPDATE cached_messages SET chat_id = ? WHERE chat_id = ?', (new_chat_id, old_chat_id))
             
             await db.commit()
     except aiosqlite.IntegrityError as e:
@@ -527,7 +577,84 @@ async def add_user_warning(chat_id: int, user_id: int) -> int:
     return await get_user_warnings(chat_id, user_id)
 
 async def reset_user_warnings(chat_id: int, user_id: int):
-    """Сбрасывает счетчик предупреждений пользователя в чате."""
+    """Сбросает счетчик предупреждений пользователя в чате."""
     async with aiosqlite.connect(DB_PATH) as db:
         await db.execute('DELETE FROM user_warnings WHERE chat_id = ? AND user_id = ?', (chat_id, user_id))
         await db.commit()
+
+
+async def add_pending_verification(chat_id: int, user_id: int):
+    """Добавляет пользователя в список ожидающих верификации (для мягкого мьюта)."""
+    async with aiosqlite.connect(DB_PATH) as db:
+        await db.execute('''
+            INSERT OR REPLACE INTO pending_verifications (chat_id, user_id, joined_at)
+            VALUES (?, ?, ?)
+        ''', (chat_id, user_id, datetime.now()))
+        await db.commit()
+
+
+async def remove_pending_verification(chat_id: int, user_id: int):
+    """Удаляет пользователя из списка ожидающих верификации."""
+    async with aiosqlite.connect(DB_PATH) as db:
+        await db.execute('''
+            DELETE FROM pending_verifications WHERE chat_id = ? AND user_id = ?
+        ''', (chat_id, user_id))
+        await db.commit()
+
+
+async def is_pending_verification(chat_id: int, user_id: int) -> bool:
+    """Проверяет, ожидает ли пользователь прохождения верификации."""
+    async with aiosqlite.connect(DB_PATH) as db:
+        async with db.execute('''
+            SELECT 1 FROM pending_verifications WHERE chat_id = ? AND user_id = ?
+        ''', (chat_id, user_id)) as cursor:
+            row = await cursor.fetchone()
+            return row is not None
+
+
+async def cache_user_message(chat_id: int, user_id: int, html_text: str):
+    """Кэширует текст отправленного сообщения пользователя."""
+    async with aiosqlite.connect(DB_PATH) as db:
+        await db.execute('''
+            INSERT OR REPLACE INTO cached_messages (chat_id, user_id, html_text, timestamp)
+            VALUES (?, ?, ?, ?)
+        ''', (chat_id, user_id, html_text, datetime.now()))
+        await db.commit()
+
+
+async def get_and_clear_cached_message(chat_id: int, user_id: int) -> str | None:
+    """Получает кэшированное сообщение пользователя и удаляет его из базы данных."""
+    async with aiosqlite.connect(DB_PATH) as db:
+        db.row_factory = aiosqlite.Row
+        async with db.execute('''
+            SELECT html_text FROM cached_messages WHERE chat_id = ? AND user_id = ?
+        ''', (chat_id, user_id)) as cursor:
+            row = await cursor.fetchone()
+            if not row:
+                return None
+            html_text = row['html_text']
+            
+        await db.execute('''
+            DELETE FROM cached_messages WHERE chat_id = ? AND user_id = ?
+        ''', (chat_id, user_id))
+        await db.commit()
+        return html_text
+
+
+async def get_global_setting(key: str) -> str | None:
+    """Возвращает значение глобальной настройки из БД."""
+    async with aiosqlite.connect(DB_PATH) as db:
+        async with db.execute("SELECT value FROM global_settings WHERE key = ?", (key,)) as cursor:
+            row = await cursor.fetchone()
+            return row[0] if row else None
+
+
+async def set_global_setting(key: str, value: str | None):
+    """Устанавливает или удаляет значение глобальной настройки в БД."""
+    async with aiosqlite.connect(DB_PATH) as db:
+        if value is None:
+            await db.execute("DELETE FROM global_settings WHERE key = ?", (key,))
+        else:
+            await db.execute("INSERT OR REPLACE INTO global_settings (key, value) VALUES (?, ?)", (key, value))
+        await db.commit()
+
